@@ -1,0 +1,343 @@
+package afptoline
+
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/pratik-saptarshi/go-afp-line/afp"
+)
+
+// cp037 for test expectations.
+func testCP(t *testing.T) afp.CodePage {
+	t.Helper()
+	cp, err := afp.LookupCodePage(37)
+	if err != nil {
+		t.Fatalf("LookupCodePage(37): %v", err)
+	}
+	return cp
+}
+
+// ptxField wraps a PTX payload in a RawField as produced by afp.DecodeField.
+func ptxField(payload []byte) afp.Field {
+	return &afp.RawField{
+		Intro: afp.Introducer{
+			Length: 8 + len(payload),
+			TypeID: [3]byte{0xD3, 0xEE, 0x9B},
+		},
+		Data: payload,
+	}
+}
+
+// seq builds an unchained control sequence: 2B D3 <len> <type> <params...>.
+// length counts itself and the type byte.
+func seq(ftype byte, params ...byte) []byte {
+	out := []byte{0x2B, 0xD3, byte(2 + len(params)), ftype}
+	return append(out, params...)
+}
+
+// seq16 builds an unchained control sequence with a 2-byte big-endian param.
+func seq16(ftype byte, v uint16) []byte {
+	return seq(ftype, byte(v>>8), byte(v))
+}
+
+// trn wraps EBCDIC bytes in a Transparent Data sequence.
+func trn(data ...byte) []byte { return seq(0xDA, data...) }
+
+// decode is a test helper: decode payload, fail on unexpected error.
+func decode(t *testing.T, payload []byte) []Run {
+	t.Helper()
+	runs, err := DecodePTOCA(ptxField(payload), testCP(t))
+	if err != nil {
+		t.Fatalf("DecodePTOCA: %v", err)
+	}
+	return runs
+}
+
+func approx(t *testing.T, what string, got, want float64) {
+	t.Helper()
+	if d := got - want; d < -1.0 || d > 1.0 {
+		t.Errorf("%s = %v, want %v (±1pt)", what, got, want)
+	}
+}
+
+func TestDecodePTOCA_AMB(t *testing.T) {
+	// AMB 1440 L-units = 72pt down the baseline axis.
+	runs := decode(t, append(seq(0xD2, 0x05, 0xA0), trn(0xC1)...))
+	if len(runs) != 1 {
+		t.Fatalf("got %d runs, want 1", len(runs))
+	}
+	if runs[0].Text != "A" {
+		t.Errorf("text = %q, want %q", runs[0].Text, "A")
+	}
+	approx(t, "X", runs[0].X, 0)
+	approx(t, "Y", runs[0].Y, 72)
+}
+
+func TestDecodePTOCA_AMI(t *testing.T) {
+	// AMI 2880 L-units = 144pt along the inline axis.
+	runs := decode(t, append(seq(0xC6, 0x0B, 0x40), trn(0xC1)...))
+	if len(runs) != 1 {
+		t.Fatalf("got %d runs, want 1", len(runs))
+	}
+	approx(t, "X", runs[0].X, 144)
+	approx(t, "Y", runs[0].Y, 0)
+}
+
+func TestDecodePTOCA_RMB(t *testing.T) {
+	p := append(seq(0xD2, 0x05, 0xA0), seq(0xD4, 0x02, 0xD0)...) // AMB 1440, RMB +720
+	p = append(p, trn(0xC1)...)
+	runs := decode(t, p)
+	if len(runs) != 1 {
+		t.Fatalf("got %d runs, want 1", len(runs))
+	}
+	approx(t, "Y", runs[0].Y, 108) // (1440+720)/20
+}
+
+func TestDecodePTOCA_RMB_Negative(t *testing.T) {
+	p := append(seq(0xD2, 0x05, 0xA0), seq(0xD4, 0xFD, 0x30)...) // AMB 1440, RMB -720
+	p = append(p, trn(0xC1)...)
+	runs := decode(t, p)
+	approx(t, "Y", runs[0].Y, 36) // (1440-720)/20
+}
+
+func TestDecodePTOCA_RMI(t *testing.T) {
+	p := append(seq(0xC6, 0x05, 0xA0), seq(0xC8, 0x02, 0xD0)...) // AMI 1440, RMI +720
+	p = append(p, trn(0xC1)...)
+	runs := decode(t, p)
+	approx(t, "X", runs[0].X, 108)
+}
+
+func TestDecodePTOCA_SIA_Parses(t *testing.T) {
+	// Intercharacter adjustment is tracked, not applied (no font metrics in
+	// v1 — Task 8 applies advances with the pinned metrics table).
+	p := append(seq(0xC2, 0xFF, 0xF6), trn(0xC1, 0xC2)...) // SIA -10
+	runs := decode(t, p)
+	if len(runs) != 1 || runs[0].Text != "AB" {
+		t.Fatalf("runs = %+v, want one run %q", runs, "AB")
+	}
+	approx(t, "X", runs[0].X, 0)
+}
+
+func TestDecodePTOCA_SCFL_FontSwitch(t *testing.T) {
+	p := append(trn(0xC1), seq(0xF0, 0x05)...) // "A", SCFL LID 5
+	p = append(p, trn(0xC2)...)                // "B"
+	runs := decode(t, p)
+	if len(runs) != 2 {
+		t.Fatalf("got %d runs, want 2 (font change splits runs)", len(runs))
+	}
+	if runs[0].FontID != 0 || runs[0].Text != "A" {
+		t.Errorf("run0 = %+v, want {A, font 0}", runs[0])
+	}
+	if runs[1].FontID != 5 || runs[1].Text != "B" {
+		t.Errorf("run1 = %+v, want {B, font 5}", runs[1])
+	}
+}
+
+func TestDecodePTOCA_BSU_ESU_Suppresses(t *testing.T) {
+	p := append(trn(0xC1), seq(0xF2, 0x01)...) // "A", BSU LID 1
+	p = append(p, seq(0xC6, 0x0B, 0x40)...)    // AMI 1440 *inside* suppression
+	p = append(p, trn(0xC2)...)                // "B" suppressed
+	p = append(p, seq(0xF4, 0x01)...)          // ESU LID 1
+	p = append(p, trn(0xC3)...)                // "C"
+	runs := decode(t, p)
+	if len(runs) != 2 {
+		t.Fatalf("got %d runs, want 2 (A and C; B suppressed)", len(runs))
+	}
+	if runs[0].Text != "A" || runs[1].Text != "C" {
+		t.Errorf("texts = %q, %q; want A, C", runs[0].Text, runs[1].Text)
+	}
+	// Control sequences inside suppression still execute: AMI moved to 144pt.
+	approx(t, "C.X", runs[1].X, 144)
+}
+
+func TestDecodePTOCA_BSU_Unterminated(t *testing.T) {
+	// Suppression runs to end of object: only "A" is emitted.
+	p := append(trn(0xC1), seq(0xF2, 0x01)...)
+	p = append(p, trn(0xC2)...)
+	runs := decode(t, p)
+	if len(runs) != 1 || runs[0].Text != "A" {
+		t.Fatalf("runs = %+v, want single run A", runs)
+	}
+}
+
+func TestDecodePTOCA_ESU_Unmatched(t *testing.T) {
+	_, err := DecodePTOCA(ptxField(seq(0xF4, 0x02)), testCP(t))
+	if err == nil {
+		t.Fatal("expected error for unmatched ESU, got nil")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("error type = %T, want afp.DecodeError", err)
+	}
+}
+
+func TestDecodePTOCA_UnknownSequence(t *testing.T) {
+	_, err := DecodePTOCA(ptxField(seq(0x98, 0x00, 0x00)), testCP(t))
+	if err == nil {
+		t.Fatal("expected error for unknown control sequence, got nil")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("error type = %T, want afp.DecodeError", err)
+	}
+	if !strings.Contains(derr.Reason, "98") {
+		t.Errorf("reason %q does not name the sequence code", derr.Reason)
+	}
+}
+
+func TestDecodePTOCA_Chained(t *testing.T) {
+	// 2B D3 | 04 D3(AMB chained) 05A0 | 04 C7(AMI chained) 0B40 | 03 DB(TRN chained) C1
+	p := []byte{0x2B, 0xD3, 0x04, 0xD3, 0x05, 0xA0, 0x04, 0xC7, 0x0B, 0x40, 0x03, 0xDB, 0xC1}
+	runs := decode(t, p)
+	if len(runs) != 1 {
+		t.Fatalf("got %d runs, want 1", len(runs))
+	}
+	if runs[0].Text != "A" {
+		t.Errorf("text = %q, want A", runs[0].Text)
+	}
+	approx(t, "X", runs[0].X, 144) // AMI 2880
+	approx(t, "Y", runs[0].Y, 72)  // AMB 1440
+}
+
+func TestDecodePTOCA_RawText(t *testing.T) {
+	// "Hello" in EBCDIC 037 with no control sequences at all.
+	runs := decode(t, []byte{0xC8, 0x85, 0x93, 0x93, 0x96})
+	if len(runs) != 1 {
+		t.Fatalf("got %d runs, want 1", len(runs))
+	}
+	if runs[0].Text != "Hello" {
+		t.Errorf("text = %q, want Hello", runs[0].Text)
+	}
+	approx(t, "X", runs[0].X, 0)
+	approx(t, "Y", runs[0].Y, 0)
+}
+
+func TestDecodePTOCA_RawTextSplitByMove(t *testing.T) {
+	// "AB", AMI 2880, "C" -> two runs at the two positions.
+	p := append([]byte{0xC1, 0xC2}, seq(0xC6, 0x0B, 0x40)...)
+	p = append(p, 0xC3)
+	runs := decode(t, p)
+	if len(runs) != 2 {
+		t.Fatalf("got %d runs, want 2", len(runs))
+	}
+	if runs[0].Text != "AB" || runs[1].Text != "C" {
+		t.Errorf("texts = %q, %q", runs[0].Text, runs[1].Text)
+	}
+	approx(t, "run1.X", runs[1].X, 144)
+}
+
+func TestDecodePTOCA_TRN_NoScan(t *testing.T) {
+	// TRN data containing 2B D3 must NOT be parsed as a control sequence.
+	p := []byte{0x2B, 0xD3, 0x05, 0xDA, 0x2B, 0xD3, 0x41}
+	runs := decode(t, p)
+	if len(runs) != 1 {
+		t.Fatalf("got %d runs, want 1 (TRN data is opaque)", len(runs))
+	}
+	want := testCP(t).Decode([]byte{0x2B, 0xD3, 0x41})
+	if runs[0].Text != want {
+		t.Errorf("text = %q, want %q", runs[0].Text, want)
+	}
+}
+
+func TestDecodePTOCA_RPS(t *testing.T) {
+	// RPS: RLENGTH(2B) = 3, RPTDATA = "ABC".
+	p := []byte{0x2B, 0xD3, 0x07, 0xEE, 0x00, 0x03, 0xC1, 0xC2, 0xC3}
+	runs := decode(t, p)
+	if len(runs) != 1 || runs[0].Text != "ABC" {
+		t.Fatalf("runs = %+v, want single run ABC", runs)
+	}
+}
+
+func TestDecodePTOCA_DIR_DBR_NoPositionChange(t *testing.T) {
+	// DIR with width (len 7) and DBR without (len 4): neither moves position.
+	p := append(seq(0xE4, 0x05, 0xA0, 0x00, 0x10, 0x80), seq(0xE6, 0x05, 0xA0)...)
+	p = append(p, trn(0xC1)...)
+	runs := decode(t, p)
+	if len(runs) != 1 {
+		t.Fatalf("got %d runs, want 1", len(runs))
+	}
+	approx(t, "X", runs[0].X, 0)
+	approx(t, "Y", runs[0].Y, 0)
+}
+
+func TestDecodePTOCA_BLN(t *testing.T) {
+	// SBI 1440, SIM 720, BLN -> X=margin 36pt, Y=baseline+incr 72pt.
+	p := append(seq16(0xD0, 1440), seq16(0xC0, 720)...)
+	p = append(p, seq(0xD8)...)
+	p = append(p, trn(0xC1)...)
+	runs := decode(t, p)
+	if len(runs) != 1 {
+		t.Fatalf("got %d runs, want 1", len(runs))
+	}
+	approx(t, "X", runs[0].X, 36)
+	approx(t, "Y", runs[0].Y, 72)
+}
+
+func TestDecodePTOCA_STC_STO_NOP_SVI(t *testing.T) {
+	p := append(seq(0x74, 0x01, 0x02, 0x03), seq(0xF6, 0x00, 0x00, 0x23, 0xF6)...)
+	p = append(p, seq(0xF8, 0xAA, 0xBB)...)
+	p = append(p, seq16(0xC4, 10)...)
+	p = append(p, trn(0xC1)...)
+	runs := decode(t, p)
+	if len(runs) != 1 || runs[0].Text != "A" {
+		t.Fatalf("runs = %+v, want single run A", runs)
+	}
+	approx(t, "X", runs[0].X, 0)
+	approx(t, "Y", runs[0].Y, 0)
+}
+
+func TestDecodePTOCA_Truncated(t *testing.T) {
+	for name, p := range map[string][]byte{
+		"cut sequence":   {0x2B, 0xD3, 0x05, 0xD2, 0x05},
+		"lone escape":    {0x2B, 0xD3},
+		"cut chained":    {0x2B, 0xD3, 0x03, 0xD3, 0x05},
+		"length overrun": {0x2B, 0xD3, 0xFF, 0xD2, 0x00},
+	} {
+		if _, err := DecodePTOCA(ptxField(p), testCP(t)); err == nil {
+			t.Errorf("%s: expected error, got nil", name)
+		}
+	}
+}
+
+func TestDecodePTOCA_NonPTX(t *testing.T) {
+	bdt := &afp.RawField{
+		Intro: afp.Introducer{Length: 16, TypeID: [3]byte{0xD3, 0xA8, 0xA8}},
+		Data:  make([]byte, 8),
+	}
+	if _, err := DecodePTOCA(bdt, testCP(t)); err == nil {
+		t.Error("expected error for non-PTX field, got nil")
+	}
+	if _, err := DecodePTOCA(&afp.BDT{}, testCP(t)); err == nil {
+		t.Error("expected error for non-RawField, got nil")
+	}
+}
+
+func TestDecodePTOCA_Empty(t *testing.T) {
+	runs := decode(t, nil)
+	if len(runs) != 0 {
+		t.Errorf("got %d runs, want 0", len(runs))
+	}
+}
+
+// TestDecodePTOCA_AllSequencesParse checks every in-scope control sequence
+// from the subset contract §5 parses without error at its canonical length.
+func TestDecodePTOCA_AllSequencesParse(t *testing.T) {
+	vectors := map[string][]byte{
+		"AMB": seq(0xD2, 0x05, 0xA0), "AMI": seq(0xC6, 0x05, 0xA0),
+		"RMB": seq(0xD4, 0x05, 0xA0), "RMI": seq(0xC8, 0x05, 0xA0),
+		"SBI": seq(0xD0, 0x05, 0xA0), "SIM": seq(0xC0, 0x05, 0xA0),
+		"SIA": seq(0xC2, 0x05, 0xA0), "SVI": seq(0xC4, 0x05, 0xA0),
+		"STC": seq(0x74, 0x01, 0x02), "BSU": seq(0xF2, 0x01),
+		"ESU":  append(seq(0xF2, 0x01), seq(0xF4, 0x01)...), // BSU then matched ESU (unmatched ESU errors)
+		"SCFL": seq(0xF0, 0x05), "STO": seq(0xF6, 0x00, 0x00, 0x23, 0xF6),
+		"TRN": trn(0xC1), "RPS": {0x2B, 0xD3, 0x07, 0xEE, 0x00, 0x03, 0xC1, 0xC2, 0xC3},
+		"DIR": seq(0xE4, 0x05, 0xA0, 0x00, 0x10, 0x80), "DBR": seq(0xE6, 0x05, 0xA0),
+		"BLN": seq(0xD8), "NOP": seq(0xF8, 0xAA),
+	}
+	for name, p := range vectors {
+		if _, err := DecodePTOCA(ptxField(p), testCP(t)); err != nil {
+			t.Errorf("%s: unexpected error: %v", name, err)
+		}
+	}
+}
