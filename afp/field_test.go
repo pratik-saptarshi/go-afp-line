@@ -228,3 +228,26 @@ func FuzzDecodeField(f *testing.F) {
 		}
 	})
 }
+
+func TestAcronym(t *testing.T) {
+	cases := []struct {
+		typeID string
+		want   string
+		ok     bool
+	}{
+		{"D3A8A8", "BDT", true},
+		{"D3A9AF", "EPG", true},
+		{"D3EE9B", "PTX", true}, // contracted in-subset: named, no typed decoder yet
+		{"D3A8BB", "BGR", true},
+		{"D3ABCC", "IMM", true},
+		{"D3FFFF", "", false}, // truly unknown
+		{"ZZ", "", false},     // malformed hex
+		{"D3A8", "", false},   // wrong length
+	}
+	for _, c := range cases {
+		got, ok := Acronym(c.typeID)
+		if got != c.want || ok != c.ok {
+			t.Errorf("Acronym(%q) = (%q, %v), want (%q, %v)", c.typeID, got, ok, c.want, c.ok)
+		}
+	}
+}
