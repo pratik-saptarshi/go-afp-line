@@ -1,6 +1,7 @@
 package afp
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -17,10 +18,10 @@ type Field interface {
 
 // BDT is a Begin Document structured field (D3A8A8).
 type BDT struct {
-	Intro       Introducer
-	DocName     string // CHAR[8], EBCDIC-037 decoded, trailing padding trimmed
-	Reserved    [2]byte
-	TripletData []byte // raw triplet bytes; parsed by Task 3
+	Intro    Introducer
+	DocName  string // CHAR[8], EBCDIC-037 decoded, trailing padding trimmed
+	Reserved [2]byte
+	Triplets Triplets // parsed triplet run; re-encoded byte-identically
 }
 
 // TypeID implements Field.
@@ -31,16 +32,16 @@ func (f *BDT) Encode() []byte {
 	b := f.Intro.Encode()
 	b = append(b, encodeCHAR8(f.DocName)...)
 	b = append(b, f.Reserved[0], f.Reserved[1])
-	b = append(b, f.TripletData...)
+	b = append(b, f.Triplets.Encode()...)
 	return b
 }
 
 // EDT is an End Document structured field (D3A9A8).
 type EDT struct {
-	Intro       Introducer
-	DocName     string
-	Reserved    [2]byte
-	TripletData []byte
+	Intro    Introducer
+	DocName  string
+	Reserved [2]byte
+	Triplets Triplets
 }
 
 // TypeID implements Field.
@@ -51,7 +52,7 @@ func (f *EDT) Encode() []byte {
 	b := f.Intro.Encode()
 	b = append(b, encodeCHAR8(f.DocName)...)
 	b = append(b, f.Reserved[0], f.Reserved[1])
-	b = append(b, f.TripletData...)
+	b = append(b, f.Triplets.Encode()...)
 	return b
 }
 
@@ -62,7 +63,7 @@ type BPG struct {
 	HasPageName bool   // true when the 8-byte name was present on the wire,
 	// even if it decodes to empty (all-spaces); required for
 	// byte-identical re-encoding
-	TripletData []byte // raw triplet bytes; parsed by Task 3
+	Triplets Triplets // parsed triplet run; re-encoded byte-identically
 }
 
 // TypeID implements Field.
@@ -74,7 +75,7 @@ func (f *BPG) Encode() []byte {
 	if f.HasPageName {
 		b = append(b, encodeCHAR8(f.PageName)...)
 	}
-	b = append(b, f.TripletData...)
+	b = append(b, f.Triplets.Encode()...)
 	return b
 }
 
@@ -83,7 +84,7 @@ type EPG struct {
 	Intro       Introducer
 	PageName    string
 	HasPageName bool // see BPG
-	TripletData []byte
+	Triplets    Triplets
 }
 
 // TypeID implements Field.
@@ -95,7 +96,7 @@ func (f *EPG) Encode() []byte {
 	if f.HasPageName {
 		b = append(b, encodeCHAR8(f.PageName)...)
 	}
-	b = append(b, f.TripletData...)
+	b = append(b, f.Triplets.Encode()...)
 	return b
 }
 
@@ -297,9 +298,25 @@ func cloneBytes(b []byte) []byte {
 	return cp
 }
 
+// parseTriplets decodes a field's triplet run, attaching the field's ID and
+// re-basing the error offset to the stream position of the triplet run.
+func parseTriplets(in Introducer, runOffset int, data []byte) (Triplets, error) {
+	ts, err := DecodeTriplets(data)
+	if err != nil {
+		var derr DecodeError
+		if errors.As(err, &derr) {
+			derr.FieldID = in.TypeIDString()
+			derr.Offset += runOffset
+			return nil, derr
+		}
+		return nil, err
+	}
+	return ts, nil
+}
+
 // decodeDocField decodes BDT/EDT: DocName CHAR[8] (0-7), reserved (8-9),
 // triplets (10-n).
-func decodeDocField(name string, mk func(Introducer, string, [2]byte, []byte) Field) func(Introducer, []byte) (Field, error) {
+func decodeDocField(name string, mk func(Introducer, string, [2]byte, Triplets) Field) func(Introducer, []byte) (Field, error) {
 	return func(in Introducer, data []byte) (Field, error) {
 		if len(data) < 10 {
 			return nil, DecodeError{
@@ -311,27 +328,35 @@ func decodeDocField(name string, mk func(Introducer, string, [2]byte, []byte) Fi
 		}
 		var reserved [2]byte
 		copy(reserved[:], data[8:10])
-		return mk(in, decodeCHAR(data[0:8]), reserved, cloneBytes(data[10:])), nil
+		ts, err := parseTriplets(in, in.HeaderLength()+10, data[10:])
+		if err != nil {
+			return nil, err
+		}
+		return mk(in, decodeCHAR(data[0:8]), reserved, ts), nil
 	}
 }
 
-func newBDT(in Introducer, name string, reserved [2]byte, triplets []byte) Field {
-	return &BDT{Intro: in, DocName: name, Reserved: reserved, TripletData: triplets}
+func newBDT(in Introducer, name string, reserved [2]byte, triplets Triplets) Field {
+	return &BDT{Intro: in, DocName: name, Reserved: reserved, Triplets: triplets}
 }
 
-func newEDT(in Introducer, name string, reserved [2]byte, triplets []byte) Field {
-	return &EDT{Intro: in, DocName: name, Reserved: reserved, TripletData: triplets}
+func newEDT(in Introducer, name string, reserved [2]byte, triplets Triplets) Field {
+	return &EDT{Intro: in, DocName: name, Reserved: reserved, Triplets: triplets}
 }
 
 // decodePageField decodes BPG/EPG: PageName CHAR[8] (0-7, optional),
 // triplets (8-n).
-func decodePageField(name string, mk func(Introducer, string, bool, []byte) Field) func(Introducer, []byte) (Field, error) {
+func decodePageField(name string, mk func(Introducer, string, bool, Triplets) Field) func(Introducer, []byte) (Field, error) {
 	return func(in Introducer, data []byte) (Field, error) {
 		switch {
 		case len(data) == 0:
 			return mk(in, "", false, nil), nil
 		case len(data) >= 8:
-			return mk(in, decodeCHAR(data[0:8]), true, cloneBytes(data[8:])), nil
+			ts, err := parseTriplets(in, in.HeaderLength()+8, data[8:])
+			if err != nil {
+				return nil, err
+			}
+			return mk(in, decodeCHAR(data[0:8]), true, ts), nil
 		default:
 			return nil, DecodeError{
 				FieldID: in.TypeIDString(),
@@ -343,12 +368,12 @@ func decodePageField(name string, mk func(Introducer, string, bool, []byte) Fiel
 	}
 }
 
-func newBPG(in Introducer, name string, hasName bool, triplets []byte) Field {
-	return &BPG{Intro: in, PageName: name, HasPageName: hasName, TripletData: triplets}
+func newBPG(in Introducer, name string, hasName bool, triplets Triplets) Field {
+	return &BPG{Intro: in, PageName: name, HasPageName: hasName, Triplets: triplets}
 }
 
-func newEPG(in Introducer, name string, hasName bool, triplets []byte) Field {
-	return &EPG{Intro: in, PageName: name, HasPageName: hasName, TripletData: triplets}
+func newEPG(in Introducer, name string, hasName bool, triplets Triplets) Field {
+	return &EPG{Intro: in, PageName: name, HasPageName: hasName, Triplets: triplets}
 }
 
 // decodeCHAR decodes an EBCDIC-037 CHAR parameter to a string, trimming
