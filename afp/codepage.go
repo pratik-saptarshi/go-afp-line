@@ -39,6 +39,7 @@ func LookupCodePage(cpgid uint16) (CodePage, error) {
 		return cp, nil
 	}
 	return CodePage{}, DecodeError{
+		Kind:   KindEncoding,
 		Reason: fmt.Sprintf("code page CPGID %d outside the v1 subset (supported: 37, 500)", cpgid),
 	}
 }

@@ -296,6 +296,7 @@ func DecodeField(b []byte) (Field, error) {
 		return nil, DecodeError{
 			FieldID: in.TypeIDString(),
 			Offset:  0,
+			Kind:    KindStructure,
 			Reason: fmt.Sprintf("field byte count %d does not match SFLength %d",
 				len(b), in.Length),
 		}
@@ -305,6 +306,7 @@ func DecodeField(b []byte) (Field, error) {
 		return nil, DecodeError{
 			FieldID: in.TypeIDString(),
 			Offset:  0,
+			Kind:    KindValidation,
 			Reason:  "unknown structured field type: aborting (not in contracted subset)",
 		}
 	}
@@ -349,6 +351,7 @@ func decodeDocField(name string, mk func(Introducer, string, [2]byte, Triplets) 
 			return nil, DecodeError{
 				FieldID: in.TypeIDString(),
 				Offset:  in.HeaderLength(),
+				Kind:    KindStructure,
 				Reason: fmt.Sprintf("%s: need 10 data bytes (DocName+reserved), have %d",
 					name, len(data)),
 			}
@@ -388,6 +391,7 @@ func decodePageField(name string, mk func(Introducer, string, bool, Triplets) Fi
 			return nil, DecodeError{
 				FieldID: in.TypeIDString(),
 				Offset:  in.HeaderLength(),
+				Kind:    KindStructure,
 				Reason: fmt.Sprintf("%s: need 0 or >=8 data bytes (PageName), have %d",
 					name, len(data)),
 			}

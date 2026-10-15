@@ -124,49 +124,53 @@ type reduceState struct {
 	off      int // cumulative stream offset through the field currently being visited
 }
 
-func (st *reduceState) fail(id string, reason string) error {
-	return afp.DecodeError{FieldID: id, Reason: reason}
+// fail builds the reducer's DecodeError. The kind classifies the failure;
+// the true cumulative stream offset (st.off, advanced past the field
+// currently being visited before every visit) is attached here so no call
+// site can forget it.
+func (st *reduceState) fail(id string, kind afp.ErrorKind, reason string) error {
+	return afp.DecodeError{FieldID: id, Offset: st.off, Kind: kind, Reason: reason}
 }
 
 func (st *reduceState) visit(f afp.Field) error {
 	switch t := f.(type) {
 	case *afp.BDT:
 		if st.inDoc {
-			return st.fail(t.TypeID(), "nested BDT: document already open")
+			return st.fail(t.TypeID(), afp.KindStructure, "nested BDT: document already open")
 		}
 		st.inDoc = true
 		return nil
 	case *afp.EDT:
 		if !st.inDoc {
-			return st.fail(t.TypeID(), "EDT without BDT")
+			return st.fail(t.TypeID(), afp.KindStructure, "EDT without BDT")
 		}
 		if st.page != nil {
-			return st.fail(t.TypeID(), "EDT with open page: missing EPG")
+			return st.fail(t.TypeID(), afp.KindStructure, "EDT with open page: missing EPG")
 		}
 		if st.bng != 0 || st.bag != 0 || st.bpt != 0 {
-			return st.fail(t.TypeID(), "EDT with unclosed group")
+			return st.fail(t.TypeID(), afp.KindStructure, "EDT with unclosed group")
 		}
 		st.inDoc = false
 		return nil
 	case *afp.BPG:
 		if !st.inDoc {
-			return st.fail(t.TypeID(), "BPG outside document")
+			return st.fail(t.TypeID(), afp.KindStructure, "BPG outside document")
 		}
 		if st.page != nil {
-			return st.fail(t.TypeID(), "nested BPG: page already open")
+			return st.fail(t.TypeID(), afp.KindStructure, "nested BPG: page already open")
 		}
 		w, h := ResolvePageGeometry()
 		st.page = &line.Page{Number: len(st.pages) + 1, Width: w, Height: h}
 		return nil
 	case *afp.EPG:
 		if st.page == nil {
-			return st.fail(t.TypeID(), "EPG without BPG")
+			return st.fail(t.TypeID(), afp.KindStructure, "EPG without BPG")
 		}
 		if st.bag != 0 {
-			return st.fail(t.TypeID(), "EPG with open BAG group")
+			return st.fail(t.TypeID(), afp.KindStructure, "EPG with open BAG group")
 		}
 		if st.bpt != 0 {
-			return st.fail(t.TypeID(), "EPG with open BPT group")
+			return st.fail(t.TypeID(), afp.KindStructure, "EPG with open BPT group")
 		}
 		st.pages = append(st.pages, *st.page)
 		st.page = nil
@@ -174,7 +178,7 @@ func (st *reduceState) visit(f afp.Field) error {
 	case *afp.RawField:
 		return st.visitRaw(t)
 	default:
-		return st.fail(f.TypeID(), "unhandled field type in reduction walk")
+		return st.fail(f.TypeID(), afp.KindValidation, "unhandled field type in reduction walk")
 	}
 }
 
@@ -192,56 +196,56 @@ func (st *reduceState) visitRaw(t *afp.RawField) error {
 	switch id {
 	case "D3A8AD": // BNG
 		if !st.inDoc || st.page != nil || st.bng != 0 {
-			return st.fail(id, "BNG in illegal position")
+			return st.fail(id, afp.KindStructure, "BNG in illegal position")
 		}
 		st.bng++
 	case "D3A9AD": // ENG
 		if st.bng != 1 {
-			return st.fail(id, "ENG without BNG")
+			return st.fail(id, afp.KindStructure, "ENG without BNG")
 		}
 		st.bng--
 	case "D3A8C9": // BAG
 		if !st.inDoc || st.page == nil || st.bag != 0 {
-			return st.fail(id, "BAG in illegal position")
+			return st.fail(id, afp.KindStructure, "BAG in illegal position")
 		}
 		st.bag++
 	case "D3A9C9": // EAG
 		if st.bag != 1 {
-			return st.fail(id, "EAG without BAG")
+			return st.fail(id, afp.KindStructure, "EAG without BAG")
 		}
 		st.bag--
 	case "D3A89B": // BPT
 		if st.page == nil || st.bpt != 0 {
-			return st.fail(id, "BPT outside page or nested")
+			return st.fail(id, afp.KindStructure, "BPT outside page or nested")
 		}
 		st.bpt++
 	case "D3A99B": // EPT
 		if st.bpt != 1 {
-			return st.fail(id, "EPT without BPT")
+			return st.fail(id, afp.KindStructure, "EPT without BPT")
 		}
 		st.bpt--
 	case "D3AB8A", // MCF: v1 notes the mapping; fixtures carry none
 		"D3B19B": // PTD: v1 notes the descriptor; fixtures carry no AEG
 		if !st.inDoc {
-			return st.fail(id, "environment field outside document")
+			return st.fail(id, afp.KindStructure, "environment field outside document")
 		}
 	default:
-		return st.fail(id, "contracted field without v1 reduction semantics")
+		return st.fail(id, afp.KindValidation, "contracted field without v1 reduction semantics")
 	}
 	return nil
 }
 
 func (st *reduceState) visitPTX(t *afp.RawField) error {
 	if st.page == nil {
-		return st.fail(t.TypeID(), "PTX outside page")
+		return st.fail(t.TypeID(), afp.KindStructure, "PTX outside page")
 	}
 	runs, err := decodePTOCA(t, st.cp, st.textLeft)
 	if err != nil {
 		// The decoder's fail-fast budget error carries no field context;
 		// attach the offending PTX's identity and true wire offset here.
 		var derr afp.DecodeError
-		if errors.As(err, &derr) && derr.Reason == budgetExceededReason {
-			return afp.DecodeError{FieldID: t.TypeID(), Offset: st.off, Reason: derr.Reason}
+		if errors.As(err, &derr) && derr.Kind == afp.KindBudget {
+			return afp.DecodeError{FieldID: t.TypeID(), Offset: st.off, Kind: afp.KindBudget, Reason: derr.Reason}
 		}
 		return err
 	}
@@ -255,6 +259,7 @@ func (st *reduceState) visitPTX(t *afp.RawField) error {
 				return afp.DecodeError{
 					FieldID: t.TypeID(),
 					Offset:  st.off,
+					Kind:    afp.KindEncoding,
 					Reason:  fmt.Sprintf("C1 control character U+%04X has no WinAnsi encoding; rejected per policy, not mapped", c),
 				}
 			}
@@ -268,11 +273,11 @@ func (st *reduceState) visitPTX(t *afp.RawField) error {
 		n += len(run.Text)
 	}
 	if n > st.textLeft {
-		return afp.DecodeError{FieldID: t.TypeID(), Offset: st.off, Reason: budgetExceededReason}
+		return afp.DecodeError{FieldID: t.TypeID(), Offset: st.off, Kind: afp.KindBudget, Reason: budgetExceededReason}
 	}
 	st.textLeft -= n
 	for _, run := range runs {
-		fontID, err := fontIDForLID(run.FontID)
+		fontID, err := fontIDForLID(run.FontID, st.off)
 		if err != nil {
 			return err
 		}
@@ -290,11 +295,13 @@ func (st *reduceState) visitPTX(t *afp.RawField) error {
 // fontIDForLID maps a PTOCA SCFL local font ID to a pinned line font ID.
 // LID 0 is the default font. Any other LID is a loud error: without an MCF
 // mapping we would be guessing metrics, and v1 never guesses.
-func fontIDForLID(lid byte) (string, error) {
+func fontIDForLID(lid byte, offset int) (string, error) {
 	if lid == 0 {
 		return defaultFontID, nil
 	}
 	return "", afp.DecodeError{
+		Offset: offset,
+		Kind:   afp.KindValidation,
 		Reason: fmt.Sprintf("SCFL local font ID %d has no pinned metrics mapping (MCF unmapped)", lid),
 	}
 }
@@ -338,13 +345,13 @@ func mediumMapName(data []byte) string {
 // finish validates end-of-stream structure: no unclosed document, page, or group.
 func (st *reduceState) finish() error {
 	if st.page != nil {
-		return st.fail("", "end of stream with open page: missing EPG")
+		return st.fail("", afp.KindStructure, "end of stream with open page: missing EPG")
 	}
 	if st.bng != 0 || st.bag != 0 || st.bpt != 0 {
-		return st.fail("", "end of stream with unclosed group")
+		return st.fail("", afp.KindStructure, "end of stream with unclosed group")
 	}
 	if st.inDoc {
-		return st.fail("", "end of stream with open document: missing EDT")
+		return st.fail("", afp.KindStructure, "end of stream with open document: missing EDT")
 	}
 	return nil
 }

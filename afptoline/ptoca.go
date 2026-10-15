@@ -78,7 +78,7 @@ func (st *ptocaState) text(b []byte) error {
 		return nil
 	}
 	if st.remaining >= 0 && len(b) > st.remaining {
-		return afp.DecodeError{Reason: budgetExceededReason}
+		return afp.DecodeError{Kind: afp.KindBudget, Reason: budgetExceededReason}
 	}
 	st.cur = append(st.cur, b...)
 	st.remaining -= len(b)
@@ -130,10 +130,10 @@ func DecodePTOCA(f afp.Field, cp afp.CodePage) ([]Run, error) {
 func decodePTOCA(f afp.Field, cp afp.CodePage, maxBytes int) ([]Run, error) {
 	rf, ok := f.(*afp.RawField)
 	if !ok {
-		return nil, afp.DecodeError{Reason: fmt.Sprintf("DecodePTOCA needs *afp.RawField, got %T", f)}
+		return nil, afp.DecodeError{Kind: afp.KindValidation, Reason: fmt.Sprintf("DecodePTOCA needs *afp.RawField, got %T", f)}
 	}
 	if id := rf.Intro.TypeIDString(); id != "D3EE9B" {
-		return nil, afp.DecodeError{FieldID: id, Reason: "DecodePTOCA needs a PTX field (D3EE9B)"}
+		return nil, afp.DecodeError{FieldID: id, Kind: afp.KindValidation, Reason: "DecodePTOCA needs a PTX field (D3EE9B)"}
 	}
 	st := &ptocaState{cp: cp, remaining: maxBytes}
 	data := rf.Data
@@ -180,14 +180,14 @@ func decodePTOCA(f afp.Field, cp afp.CodePage, maxBytes int) ([]Run, error) {
 func (st *ptocaState) execUnchained(data []byte, pos int) (int, bool, error) {
 	// data[pos]==0x2B && data[pos+1]==0xD3 established by caller.
 	if pos+3 >= len(data) {
-		return 0, false, afp.DecodeError{FieldID: "D3EE9B", Offset: pos, Reason: "truncated control sequence introducer"}
+		return 0, false, afp.DecodeError{FieldID: "D3EE9B", Offset: pos, Kind: afp.KindStructure, Reason: "truncated control sequence introducer"}
 	}
 	length := int(data[pos+2])
 	if length < 2 {
-		return 0, false, afp.DecodeError{FieldID: "D3EE9B", Offset: pos, Reason: fmt.Sprintf("invalid control sequence length %d", length)}
+		return 0, false, afp.DecodeError{FieldID: "D3EE9B", Offset: pos, Kind: afp.KindStructure, Reason: fmt.Sprintf("invalid control sequence length %d", length)}
 	}
 	if pos+2+length > len(data) {
-		return 0, false, afp.DecodeError{FieldID: "D3EE9B", Offset: pos, Reason: "control sequence extends past PTX data"}
+		return 0, false, afp.DecodeError{FieldID: "D3EE9B", Offset: pos, Kind: afp.KindStructure, Reason: "control sequence extends past PTX data"}
 	}
 	chained, err := st.exec(data[pos+3], data[pos+4:pos+2+length], pos)
 	if err != nil {
@@ -200,14 +200,14 @@ func (st *ptocaState) execUnchained(data []byte, pos int) (int, bool, error) {
 // only — no 2B D3 prefix).
 func (st *ptocaState) execChained(data []byte, pos int) (int, bool, error) {
 	if pos+1 >= len(data) {
-		return 0, false, afp.DecodeError{FieldID: "D3EE9B", Offset: pos, Reason: "truncated chained control sequence introducer"}
+		return 0, false, afp.DecodeError{FieldID: "D3EE9B", Offset: pos, Kind: afp.KindStructure, Reason: "truncated chained control sequence introducer"}
 	}
 	length := int(data[pos])
 	if length < 2 {
-		return 0, false, afp.DecodeError{FieldID: "D3EE9B", Offset: pos, Reason: fmt.Sprintf("invalid chained control sequence length %d", length)}
+		return 0, false, afp.DecodeError{FieldID: "D3EE9B", Offset: pos, Kind: afp.KindStructure, Reason: fmt.Sprintf("invalid chained control sequence length %d", length)}
 	}
 	if pos+length > len(data) {
-		return 0, false, afp.DecodeError{FieldID: "D3EE9B", Offset: pos, Reason: "chained control sequence extends past PTX data"}
+		return 0, false, afp.DecodeError{FieldID: "D3EE9B", Offset: pos, Kind: afp.KindStructure, Reason: "chained control sequence extends past PTX data"}
 	}
 	chained, err := st.exec(data[pos+1], data[pos+2:pos+length], pos)
 	if err != nil {
@@ -227,6 +227,7 @@ func (st *ptocaState) exec(ftype byte, params []byte, offset int) (bool, error) 
 		return false, afp.DecodeError{
 			FieldID: "D3EE9B",
 			Offset:  offset,
+			Kind:    afp.KindValidation,
 			Reason:  fmt.Sprintf("unknown PTOCA control sequence 0x%02X", base),
 		}
 	}
@@ -302,6 +303,7 @@ func seqLenError(offset, want, got int) error {
 	return afp.DecodeError{
 		FieldID: "D3EE9B",
 		Offset:  offset,
+		Kind:    afp.KindStructure,
 		Reason:  fmt.Sprintf("control sequence wants %d param bytes, got %d", want, got),
 	}
 }
@@ -340,6 +342,7 @@ func doESU(st *ptocaState, params []byte, offset int) error {
 	return afp.DecodeError{
 		FieldID: "D3EE9B",
 		Offset:  offset,
+		Kind:    afp.KindStructure,
 		Reason:  fmt.Sprintf("ESU with no matching BSU (LID 0x%02X)", lid),
 	}
 }
@@ -389,6 +392,7 @@ func doRPS(st *ptocaState, params []byte, offset int) error {
 		return afp.DecodeError{
 			FieldID: "D3EE9B",
 			Offset:  offset,
+			Kind:    afp.KindStructure,
 			Reason:  fmt.Sprintf("RPS RLENGTH %d exceeds available %d bytes", n, len(data)),
 		}
 	}
@@ -402,7 +406,7 @@ func doRPS(st *ptocaState, params []byte, offset int) error {
 	// exceeds the remaining budget can never be satisfied, so reject it
 	// without the up-to-64 KiB transient.
 	if st.remaining >= 0 && n > st.remaining {
-		return afp.DecodeError{Reason: budgetExceededReason}
+		return afp.DecodeError{Kind: afp.KindBudget, Reason: budgetExceededReason}
 	}
 	st.markStart()
 	// RLENGTH is a uint16, so the repeat buffer is bounded at 64 KiB, and
@@ -421,6 +425,7 @@ func doRule(st *ptocaState, params []byte, offset int) error {
 		return afp.DecodeError{
 			FieldID: "D3EE9B",
 			Offset:  offset,
+			Kind:    afp.KindStructure,
 			Reason:  fmt.Sprintf("rule sequence wants 2 or 5 param bytes, got %d", len(params)),
 		}
 	}

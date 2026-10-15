@@ -86,6 +86,7 @@ func (in Introducer) Encode() []byte {
 func DecodeIntroducer(b []byte) (Introducer, error) {
 	if len(b) < sfiLen {
 		return Introducer{}, DecodeError{
+			Kind:   KindStructure,
 			Offset: 0,
 			Reason: fmt.Sprintf("truncated introducer: need %d bytes, have %d", sfiLen, len(b)),
 		}
@@ -95,6 +96,7 @@ func DecodeIntroducer(b []byte) (Introducer, error) {
 	fieldID := fmt.Sprintf("%02X%02X%02X", typeID[0], typeID[1], typeID[2])
 	if length < sfiLen {
 		return Introducer{}, DecodeError{
+			Kind:    KindStructure,
 			FieldID: fieldID,
 			Offset:  0,
 			Reason:  fmt.Sprintf("invalid SFLength %d: minimum %d", length, sfiLen),
@@ -102,6 +104,7 @@ func DecodeIntroducer(b []byte) (Introducer, error) {
 	}
 	if length > MaxFieldSize {
 		return Introducer{}, DecodeError{
+			Kind:    KindStructure,
 			FieldID: fieldID,
 			Offset:  0,
 			Reason:  fmt.Sprintf("SFLength %d exceeds MaxFieldSize %d", length, MaxFieldSize),
@@ -109,6 +112,7 @@ func DecodeIntroducer(b []byte) (Introducer, error) {
 	}
 	if length > maxSFLength {
 		return Introducer{}, DecodeError{
+			Kind:    KindStructure,
 			FieldID: fieldID,
 			Offset:  0,
 			Reason:  fmt.Sprintf("SFLength %d exceeds MO:DCA maximum %d", length, maxSFLength),
@@ -120,6 +124,7 @@ func DecodeIntroducer(b []byte) (Introducer, error) {
 	}
 	if len(b) < sfiLen+1 {
 		return Introducer{}, DecodeError{
+			Kind:    KindStructure,
 			FieldID: fieldID,
 			Offset:  sfiLen,
 			Reason:  "truncated SFI extension: missing ExtLength byte",
@@ -128,6 +133,7 @@ func DecodeIntroducer(b []byte) (Introducer, error) {
 	extLen := int(b[sfiLen])
 	if extLen < 1 {
 		return Introducer{}, DecodeError{
+			Kind:    KindStructure,
 			FieldID: fieldID,
 			Offset:  sfiLen,
 			Reason:  fmt.Sprintf("invalid ExtLength %d: range 1..255", extLen),
@@ -135,6 +141,7 @@ func DecodeIntroducer(b []byte) (Introducer, error) {
 	}
 	if len(b) < sfiLen+extLen {
 		return Introducer{}, DecodeError{
+			Kind:    KindStructure,
 			FieldID: fieldID,
 			Offset:  sfiLen,
 			Reason:  fmt.Sprintf("truncated SFI extension: need %d bytes, have %d", extLen, len(b)-sfiLen),
@@ -179,23 +186,26 @@ func SplitFields(r io.Reader) ([][]byte, error) {
 			off++ // strip the 5A marker; the record length is the SFLength
 		}
 		if len(data)-off < 2 {
-			return nil, DecodeError{Offset: fieldStart, Reason: "truncated field length"}
+			return nil, DecodeError{Offset: fieldStart, Kind: KindStructure, Reason: "truncated field length"}
 		}
 		flen := int(binary.BigEndian.Uint16(data[off : off+2]))
 		if flen < sfiLen {
 			return nil, DecodeError{
+				Kind:   KindStructure,
 				Offset: fieldStart,
 				Reason: fmt.Sprintf("invalid field length %d: minimum %d", flen, sfiLen),
 			}
 		}
 		if flen > MaxFieldSize {
 			return nil, DecodeError{
+				Kind:   KindStructure,
 				Offset: fieldStart,
 				Reason: fmt.Sprintf("field length %d exceeds MaxFieldSize %d", flen, MaxFieldSize),
 			}
 		}
 		if len(data)-off < flen {
 			return nil, DecodeError{
+				Kind:   KindStructure,
 				Offset: fieldStart,
 				Reason: fmt.Sprintf("truncated field: need %d bytes, have %d", flen, len(data)-off),
 			}
