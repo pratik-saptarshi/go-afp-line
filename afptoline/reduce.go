@@ -245,6 +245,21 @@ func (st *reduceState) visitPTX(t *afp.RawField) error {
 		}
 		return err
 	}
+	// Reject C1 controls per policy: they have no WinAnsi encoding, so they
+	// must never reach linetopdf. The check runs on the decoded Unicode rune,
+	// independent of code page, immediately after decode — before budget
+	// accounting or appending to the page.
+	for _, run := range runs {
+		for _, c := range run.Text {
+			if c >= 0x80 && c <= 0x9F {
+				return afp.DecodeError{
+					FieldID: t.TypeID(),
+					Offset:  st.off,
+					Reason:  fmt.Sprintf("C1 control character U+%04X has no WinAnsi encoding; rejected per policy, not mapped", c),
+				}
+			}
+		}
+	}
 	// Bound amplification: control sequences such as RPS can expand a small
 	// payload into many bytes. The check runs against the remaining document
 	// budget per PTX, so an attacker cannot bypass it with many small fields.

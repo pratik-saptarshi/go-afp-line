@@ -539,3 +539,65 @@ func TestReduceWithBudget_WrappedOffset(t *testing.T) {
 		t.Errorf("Reason = %q, want %q", derr.Reason, budgetExceededReason)
 	}
 }
+
+// TestReduce_RejectsC1Controls: a PTX whose EBCDIC bytes decode to C1 control
+// characters must fail the reduction immediately — in visitPTX, before any
+// text is appended — with an afp.DecodeError naming the PTX field and its
+// stream offset. A PTX whose bytes decode to valid WinAnsi-mapped text still
+// reduces fine.
+func TestReduce_RejectsC1Controls(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	epg := rawField(tEPG, ebcdicSpaces(8))
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+
+	// 0x20 in code page 037 decodes to U+0080, the low end of the C1 range.
+	c1PTX := rawField(tPTX, trn(0xC1, 0x20, 0xC2))
+	var buf bytes.Buffer
+	for _, f := range [][]byte{bdt, bpg, c1PTX, epg, edt} {
+		buf.Write(f)
+	}
+	wantOffset := len(bdt) + len(bpg) + len(c1PTX)
+
+	_, _, err := Reduce(&buf)
+	if err == nil {
+		t.Fatal("Reduce accepted a PTX decoding to U+0080")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+	}
+	if derr.FieldID != "D3EE9B" {
+		t.Errorf("FieldID = %q, want D3EE9B", derr.FieldID)
+	}
+	if derr.Offset != wantOffset {
+		t.Errorf("Offset = %d, want %d (cumulative offset through the offending PTX)", derr.Offset, wantOffset)
+	}
+
+	// The same C1 PTX also fails under ReduceWithBudget.
+	buf.Reset()
+	for _, f := range [][]byte{bdt, bpg, c1PTX, epg, edt} {
+		buf.Write(f)
+	}
+	if _, _, err := ReduceWithBudget(&buf, DefaultMaxTextBytes); err == nil {
+		t.Error("ReduceWithBudget accepted a PTX decoding to U+0080")
+	}
+
+	// 0xC1/0xC2 decode to "AB" — WinAnsi-mappable, valid — so an equivalent
+	// PTX reduces cleanly.
+	buf.Reset()
+	okPTX := rawField(tPTX, trn(0xC1, 0xC2))
+	for _, f := range [][]byte{bdt, bpg, okPTX, epg, edt} {
+		buf.Write(f)
+	}
+	doc, _, err := Reduce(&buf)
+	if err != nil {
+		t.Fatalf("Reduce of valid WinAnsi-mapped bytes = %v, want nil", err)
+	}
+	if len(doc.Pages) != 1 || len(doc.Pages[0].Runs) != 1 {
+		t.Fatalf("got %d pages/%v runs, want 1 page with 1 run", len(doc.Pages), doc.Pages)
+	}
+	if got := doc.Pages[0].Runs[0].Text; got != "AB" {
+		t.Errorf("run text = %q, want %q", got, "AB")
+	}
+}

@@ -234,3 +234,35 @@ func TestExclusion_Diagnostic(t *testing.T) {
 		}
 	})
 }
+
+// TestTextRunValidate_RejectsC1: C1 control characters (U+0080–U+009F) have
+// no WinAnsi encoding, so a run containing one is rejected per policy —
+// never mapped, never silently dropped. The check runs on the decoded
+// Unicode rune, independent of code page. Boundary runes U+007F and U+00A0
+// are not C1 and still pass.
+func TestTextRunValidate_RejectsC1(t *testing.T) {
+	for _, text := range []string{
+		"a\u0080b", // EBCDIC-037 byte 0x20 decodes here; low boundary
+		"\u0085",   // NEL, mid-range
+		"\u009F",   // high boundary
+	} {
+		run := validRun()
+		run.Text = text
+		if err := run.Validate(); err == nil {
+			t.Errorf("Validate(%q) = nil, want C1 rejection", text)
+		}
+	}
+	for _, text := range []string{
+		"Hello",
+		"a\u007Fb",  // DEL is not C1
+		"a\u00A0b",  // NBSP is not C1
+		"caf\u00E9", // WinAnsi-mappable
+		"\u20AC",    // € is WinAnsi-encodable, not C1
+	} {
+		run := validRun()
+		run.Text = text
+		if err := run.Validate(); err != nil {
+			t.Errorf("Validate(%q) = %v, want nil (not C1)", text, err)
+		}
+	}
+}

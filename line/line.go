@@ -75,6 +75,15 @@ func (r TextRun) Validate() error {
 	if r.FontID == "" {
 		return ValidationError{Where: "run", Reason: "empty font ID"}
 	}
+	// C1 controls have no WinAnsi encoding; reject per policy, not mapped.
+	// The check runs on the decoded Unicode rune, independent of code page:
+	// a byte stream's 0x80–0x9F range may be printable (e.g. Windows-1252),
+	// but a decoded rune in U+0080–U+009F is always a C1 control.
+	for _, c := range r.Text {
+		if c >= 0x80 && c <= 0x9F {
+			return ValidationError{Where: "run", Reason: fmt.Sprintf("C1 control character U+%04X has no WinAnsi encoding", c)}
+		}
+	}
 	return nil
 }
 
