@@ -39,10 +39,10 @@ func (p Page) Validate() error {
 	if p.Number < 1 {
 		return ValidationError{Where: "page", Reason: fmt.Sprintf("number %d < 1", p.Number)}
 	}
-	if !(p.Width > 0) || math.IsNaN(p.Width) {
+	if !(p.Width > 0) || math.IsNaN(p.Width) || math.IsInf(p.Width, 0) {
 		return ValidationError{Where: "page", Reason: fmt.Sprintf("non-positive width %v", p.Width)}
 	}
-	if !(p.Height > 0) || math.IsNaN(p.Height) {
+	if !(p.Height > 0) || math.IsNaN(p.Height) || math.IsInf(p.Height, 0) {
 		return ValidationError{Where: "page", Reason: fmt.Sprintf("non-positive height %v", p.Height)}
 	}
 	for i, r := range p.Runs {
@@ -63,7 +63,7 @@ type TextRun struct {
 
 // Validate checks the text run invariants.
 func (r TextRun) Validate() error {
-	if !(r.FontSize > 0) || math.IsNaN(r.FontSize) {
+	if !(r.FontSize > 0) || math.IsNaN(r.FontSize) || math.IsInf(r.FontSize, 0) {
 		return ValidationError{Where: "run", Reason: fmt.Sprintf("non-positive font size %v", r.FontSize)}
 	}
 	if math.IsNaN(r.X) || math.IsInf(r.X, 0) {

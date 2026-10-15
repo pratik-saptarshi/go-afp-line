@@ -111,6 +111,20 @@ func TestPage_Validate(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects +Inf dimensions and font size", func(t *testing.T) {
+		inf := math.Inf(1)
+		if err := (Page{Number: 1, Width: inf, Height: 792}).Validate(); err == nil {
+			t.Fatal("Validate() = nil for +Inf width, want error")
+		}
+		if err := (Page{Number: 1, Width: 612, Height: inf}).Validate(); err == nil {
+			t.Fatal("Validate() = nil for +Inf height, want error")
+		}
+		r := TextRun{Text: "x", X: 72, Y: 720, FontSize: inf, FontID: "FIX-MONO-10"}
+		if err := r.Validate(); err == nil {
+			t.Fatal("Validate() = nil for +Inf font size, want error")
+		}
+	})
+
 	t.Run("locates failing run", func(t *testing.T) {
 		p := validPage()
 		p.Runs = append(p.Runs, TextRun{Text: "bad", X: 10, Y: 10, FontSize: -1, FontID: "FIX-MONO-10"})

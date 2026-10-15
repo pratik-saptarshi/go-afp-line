@@ -344,23 +344,34 @@ func doTRN(st *ptocaState, params []byte, _ int) error {
 	return nil
 }
 
-// doRPS processes Repeat String: RLENGTH(2B) then RPTDATA bytes, presented as
-// graphic characters (inline advances per character in a real renderer; v1
-// records the run start only — see package notes).
+// doRPS processes Repeat String: RLENGTH(2B) then RPTDATA bytes. The RPTDATA
+// bytes are repeated until RLENGTH bytes of graphic characters are presented;
+// when RLENGTH equals the RPTDATA length this is identical to Transparent
+// Data (per the PTOCA reference). Inline advances per character in a real
+// renderer; v1 records the run start only — see package notes.
 func doRPS(st *ptocaState, params []byte, offset int) error {
 	if len(params) < 2 {
 		return seqLenError(offset, 2, len(params))
 	}
 	n := int(binary.BigEndian.Uint16(params[0:2]))
-	if n > len(params)-2 {
+	data := params[2:]
+	if n == 0 {
+		return nil
+	}
+	if len(data) == 0 {
 		return afp.DecodeError{
 			FieldID: "D3EE9B",
 			Offset:  offset,
-			Reason:  fmt.Sprintf("RPS RLENGTH %d exceeds available %d bytes", n, len(params)-2),
+			Reason:  fmt.Sprintf("RPS RLENGTH %d exceeds available %d bytes", n, len(data)),
 		}
 	}
 	st.markStart()
-	st.text(params[2 : 2+n])
+	// RLENGTH is a uint16, so the repeat buffer is bounded at 64 KiB.
+	repeated := make([]byte, 0, n)
+	for len(repeated) < n {
+		repeated = append(repeated, data...)
+	}
+	st.text(repeated[:n])
 	return nil
 }
 

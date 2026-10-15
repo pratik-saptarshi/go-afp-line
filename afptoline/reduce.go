@@ -121,6 +121,9 @@ func (st *reduceState) visit(f afp.Field) error {
 		if st.page == nil {
 			return st.fail(t.TypeID(), "EPG without BPG")
 		}
+		if st.bag != 0 {
+			return st.fail(t.TypeID(), "EPG with open BAG group")
+		}
 		st.pages = append(st.pages, *st.page)
 		st.page = nil
 		return nil
@@ -154,7 +157,7 @@ func (st *reduceState) visitRaw(t *afp.RawField) error {
 		}
 		st.bng--
 	case "D3A8C9": // BAG
-		if !st.inDoc || st.page != nil || st.bag != 0 {
+		if !st.inDoc || st.page == nil || st.bag != 0 {
 			return st.fail(id, "BAG in illegal position")
 		}
 		st.bag++

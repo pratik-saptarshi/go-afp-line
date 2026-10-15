@@ -249,6 +249,49 @@ func TestDecodePTOCA_RPS(t *testing.T) {
 	}
 }
 
+func TestDecodePTOCA_RPS_Repeat(t *testing.T) {
+	// RPS repeats RPTDATA until RLENGTH bytes are presented (spec: repeat
+	// until the presented byte count equals the specified number of bytes).
+	cases := []struct {
+		name    string
+		rlength uint16
+		data    []byte
+		want    string
+	}{
+		{"one byte repeated to five", 5, []byte{0xC1}, "AAAAA"},
+		{"two bytes repeated to four", 4, []byte{0xC1, 0xC2}, "ABAB"},
+		{"three bytes repeated to seven", 7, []byte{0xC1, 0xC2, 0xC3}, "ABCABCA"},
+		{"rlength equal to data length acts as TRN", 3, []byte{0xC1, 0xC2, 0xC3}, "ABC"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := append([]byte{byte(tc.rlength >> 8), byte(tc.rlength)}, tc.data...)
+			runs := decode(t, seq(0xEE, params...))
+			if len(runs) != 1 || runs[0].Text != tc.want {
+				t.Fatalf("runs = %+v, want single run %q", runs, tc.want)
+			}
+		})
+	}
+}
+
+func TestDecodePTOCA_RPS_ZeroLengthNoOp(t *testing.T) {
+	// RLENGTH=0 emits nothing and is not an error.
+	runs := decode(t, seq(0xEE, 0x00, 0x00))
+	if len(runs) != 0 {
+		t.Fatalf("got %d runs, want 0 (RLENGTH=0 is a no-op)", len(runs))
+	}
+}
+
+func TestDecodePTOCA_RPS_EmptyDataErrors(t *testing.T) {
+	// Empty RPTDATA with positive RLENGTH cannot be repeated: fail loudly.
+	p := seq(0xEE, 0x00, 0x05)
+	_, err := DecodePTOCA(ptxField(p), testCP(t))
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("err = %v (%T), want afp.DecodeError", err, err)
+	}
+}
+
 func TestDecodePTOCA_DIR_DBR_NoPositionChange(t *testing.T) {
 	// DIR with width (len 7) and DBR without (len 4): neither moves position.
 	p := append(seq(0xE4, 0x05, 0xA0, 0x00, 0x10, 0x80), seq(0xE6, 0x05, 0xA0)...)

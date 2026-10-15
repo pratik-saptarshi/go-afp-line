@@ -48,12 +48,79 @@ func pdfFontFor(fontID string) (string, error) {
 	}
 }
 
-// escapeText escapes s for use as a PDF literal string.
-func escapeText(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, "(", `\(`)
-	s = strings.ReplaceAll(s, ")", `\)`)
-	return s
+// winAnsiSpecial maps the Unicode code points assigned to Windows-1252 bytes
+// 0x80–0x9F. Bytes 0x00–0x7F and 0xA0–0xFF are the identity mapping (ASCII and
+// U+00A0–U+00FF); bytes 0x81, 0x8D, 0x8F, 0x90 and 0x9D are undefined in
+// Windows-1252 and therefore absent here.
+var winAnsiSpecial = map[rune]byte{
+	'\u20AC': 0x80, // €
+	'\u201A': 0x82, // ‚
+	'\u0192': 0x83, // ƒ
+	'\u201E': 0x84, // „
+	'\u2026': 0x85, // …
+	'\u2020': 0x86, // †
+	'\u2021': 0x87, // ‡
+	'\u02C6': 0x88, // ˆ
+	'\u2030': 0x89, // ‰
+	'\u0160': 0x8A, // Š
+	'\u2039': 0x8B, // ‹
+	'\u0152': 0x8C, // Œ
+	'\u017D': 0x8E, // Ž
+	'\u2018': 0x91, // '
+	'\u2019': 0x92, // '
+	'\u201C': 0x93, // "
+	'\u201D': 0x94, // "
+	'\u2022': 0x95, // •
+	'\u2013': 0x96, // –
+	'\u2014': 0x97, // —
+	'\u02DC': 0x98, // ˜
+	'\u2122': 0x99, // ™
+	'\u0161': 0x9A, // š
+	'\u203A': 0x9B, // ›
+	'\u0153': 0x9C, // œ
+	'\u017E': 0x9E, // ž
+	'\u0178': 0x9F, // Ÿ
+}
+
+// winAnsiByte maps r to its single Windows-1252 byte, reporting whether such
+// a mapping exists. Note the C1 range U+0080–U+009F has no mapping: those byte
+// values belong to the printable characters in winAnsiSpecial.
+func winAnsiByte(r rune) (byte, bool) {
+	switch {
+	case r < 0x80:
+		return byte(r), true
+	case r >= 0xA0 && r <= 0xFF:
+		return byte(r), true
+	default:
+		b, ok := winAnsiSpecial[r]
+		return b, ok
+	}
+}
+
+// encodeText encodes s to single-byte WinAnsi (Windows-1252) for use as a PDF
+// literal string, escaping PDF delimiters and control bytes. Standard-14
+// fonts (Courier here) use WinAnsi encoding, so UTF-8 bytes must not pass
+// through raw — "café" would otherwise read as "cafÃ©". Characters with no
+// WinAnsi mapping fail loudly; there is no silent substitution.
+func encodeText(s string) (string, error) {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		wb, ok := winAnsiByte(r)
+		if !ok {
+			return "", fmt.Errorf("character %q (U+%04X) has no WinAnsi mapping", r, r)
+		}
+		switch {
+		case wb == '\\' || wb == '(' || wb == ')':
+			b.WriteByte('\\')
+			b.WriteByte(wb)
+		case wb < 0x20 || wb == 0x7F:
+			fmt.Fprintf(&b, "\\%03o", wb)
+		default:
+			b.WriteByte(wb)
+		}
+	}
+	return b.String(), nil
 }
 
 // Render writes doc as untagged PDF to w: one page per line.Page at its
@@ -86,8 +153,12 @@ func Render(doc line.Document, w io.Writer) error {
 			if _, ok := fontMap[fontName]; !ok {
 				fontMap[fontName] = model.FontResource{}
 			}
+			text, err := encodeText(r.Text)
+			if err != nil {
+				return fmt.Errorf("linetopdf: page %d run %q: %w", pg.Number, r.Text, err)
+			}
 			fmt.Fprintf(p.Buf, "BT /%s %.3f Tf 1 0 0 1 %.3f %.3f Tm (%s) Tj ET\n",
-				fKey, r.FontSize, r.X, r.Y, escapeText(r.Text))
+				fKey, r.FontSize, r.X, r.Y, text)
 		}
 		pages = append(pages, &p)
 	}
