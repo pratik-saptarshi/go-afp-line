@@ -170,6 +170,15 @@ func TestDecodePTOCA_ESU_Unmatched(t *testing.T) {
 	if !errors.As(err, &derr) {
 		t.Fatalf("error type = %T, want afp.DecodeError", err)
 	}
+	if derr.Kind != afp.KindStructure {
+		t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindStructure)
+	}
+	if derr.FieldID != "D3EE9B" {
+		t.Errorf("FieldID = %q, want D3EE9B", derr.FieldID)
+	}
+	if !strings.Contains(derr.Reason, "ESU with no matching BSU (LID 0x02)") {
+		t.Errorf("Reason = %q, want ESU/LID naming", derr.Reason)
+	}
 }
 
 func TestDecodePTOCA_UnknownSequence(t *testing.T) {
@@ -331,15 +340,34 @@ func TestDecodePTOCA_STC_STO_NOP_SVI(t *testing.T) {
 }
 
 func TestDecodePTOCA_Truncated(t *testing.T) {
-	for name, p := range map[string][]byte{
-		"cut sequence":   {0x2B, 0xD3, 0x05, 0xD2, 0x05},
-		"lone escape":    {0x2B, 0xD3},
-		"cut chained":    {0x2B, 0xD3, 0x03, 0xD3, 0x05},
-		"length overrun": {0x2B, 0xD3, 0xFF, 0xD2, 0x00},
-	} {
-		if _, err := DecodePTOCA(ptxField(p), testCP(t)); err == nil {
-			t.Errorf("%s: expected error, got nil", name)
-		}
+	cases := []struct {
+		name       string
+		payload    []byte
+		wantKind   afp.ErrorKind
+		wantReason string
+	}{
+		{"cut sequence", []byte{0x2B, 0xD3, 0x05, 0xD2, 0x05}, afp.KindStructure, "control sequence extends past PTX data"},
+		{"lone escape", []byte{0x2B, 0xD3}, afp.KindStructure, "truncated control sequence introducer"},
+		{"cut chained", []byte{0x2B, 0xD3, 0x03, 0xD3, 0x05}, afp.KindStructure, "control sequence wants 2 param bytes, got 1"},
+		{"length overrun", []byte{0x2B, 0xD3, 0xFF, 0xD2, 0x00}, afp.KindStructure, "control sequence extends past PTX data"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := DecodePTOCA(ptxField(tc.payload), testCP(t))
+			if err == nil {
+				t.Fatalf("%s: expected error, got nil", tc.name)
+			}
+			var derr afp.DecodeError
+			if !errors.As(err, &derr) {
+				t.Fatalf("%s: error type = %T, want afp.DecodeError", tc.name, err)
+			}
+			if derr.Kind != tc.wantKind {
+				t.Errorf("%s: Kind = %q, want %q", tc.name, derr.Kind, tc.wantKind)
+			}
+			if derr.Reason != tc.wantReason {
+				t.Errorf("%s: Reason = %q, want %q", tc.name, derr.Reason, tc.wantReason)
+			}
+		})
 	}
 }
 
@@ -348,11 +376,38 @@ func TestDecodePTOCA_NonPTX(t *testing.T) {
 		Intro: afp.Introducer{Length: 16, TypeID: [3]byte{0xD3, 0xA8, 0xA8}},
 		Data:  make([]byte, 8),
 	}
-	if _, err := DecodePTOCA(bdt, testCP(t)); err == nil {
+	_, err := DecodePTOCA(bdt, testCP(t))
+	if err == nil {
 		t.Error("expected error for non-PTX field, got nil")
+	} else {
+		var derr afp.DecodeError
+		if !errors.As(err, &derr) {
+			t.Fatalf("error type = %T, want afp.DecodeError", err)
+		}
+		if derr.Kind != afp.KindValidation {
+			t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindValidation)
+		}
+		if derr.FieldID != "D3A8A8" {
+			t.Errorf("FieldID = %q, want D3A8A8", derr.FieldID)
+		}
+		if derr.Reason != "DecodePTOCA needs a PTX field (D3EE9B)" {
+			t.Errorf("Reason = %q", derr.Reason)
+		}
 	}
-	if _, err := DecodePTOCA(&afp.BDT{}, testCP(t)); err == nil {
+	_, err = DecodePTOCA(&afp.BDT{}, testCP(t))
+	if err == nil {
 		t.Error("expected error for non-RawField, got nil")
+	} else {
+		var derr afp.DecodeError
+		if !errors.As(err, &derr) {
+			t.Fatalf("error type = %T, want afp.DecodeError", err)
+		}
+		if derr.Kind != afp.KindValidation {
+			t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindValidation)
+		}
+		if !strings.Contains(derr.Reason, "DecodePTOCA needs *afp.RawField") {
+			t.Errorf("Reason = %q", derr.Reason)
+		}
 	}
 }
 
@@ -397,6 +452,9 @@ func TestPtocaStateText_BudgetExceeded(t *testing.T) {
 	var derr afp.DecodeError
 	if !errors.As(err, &derr) || derr.Reason != budgetExceededReason {
 		t.Fatalf("error = %v (%T), want afp.DecodeError with budget reason", err, err)
+	}
+	if derr.Kind != afp.KindBudget {
+		t.Fatalf("Kind = %q, want %q", derr.Kind, afp.KindBudget)
 	}
 	if len(st.cur) != 0 {
 		t.Fatalf("st.cur grew to %d bytes despite the budget error", len(st.cur))
@@ -450,6 +508,9 @@ func TestDoRPS_BudgetPrecheck(t *testing.T) {
 	if !errors.As(err, &derr) || derr.Reason != budgetExceededReason {
 		t.Fatalf("error = %v (%T), want afp.DecodeError with budget reason", err, err)
 	}
+	if derr.Kind != afp.KindBudget {
+		t.Fatalf("Kind = %q, want %q", derr.Kind, afp.KindBudget)
+	}
 	if len(st.cur) > 4096 {
 		t.Fatalf("st.cur grew to %d bytes: the repeat buffer was allocated before the budget check", len(st.cur))
 	}
@@ -458,5 +519,68 @@ func TestDoRPS_BudgetPrecheck(t *testing.T) {
 		_ = doRPS(s, params, 0)
 	}); allocs >= 1 {
 		t.Fatalf("doRPS averaged %.1f allocations per call: the 64 KiB repeat buffer was allocated before the budget check", allocs)
+	}
+}
+
+// TestDecodePTOCA_ErrorPaths: every error return in the PTOCA decoder,
+// pinned with the expected Kind, offset, and naming. Decoder errors already
+// covered elsewhere (and cited here rather than duplicated):
+//   - non-RawField / non-PTX field: TestDecodePTOCA_NonPTX
+//   - truncated unchained introducer and length overrun: TestDecodePTOCA_Truncated
+//   - unmatched ESU: TestDecodePTOCA_ESU_Unmatched
+//   - RPS/text fail-fast budget: TestDoRPS_BudgetPrecheck, TestPtocaStateText_BudgetExceeded
+func TestDecodePTOCA_ErrorPaths(t *testing.T) {
+	chained := func(tail ...byte) []byte {
+		// 2B D3, len 3, ftype 0xF3 (BSU, chained bit set), LID 0x05: a valid
+		// chained opener, then the chained-sequence bytes under test.
+		return append(seq(0xF3, 0x05), tail...)
+	}
+	cases := []struct {
+		name       string
+		payload    []byte
+		wantKind   afp.ErrorKind
+		wantOffset int
+		wantReason string // substring
+	}{
+		{"invalid unchained length", []byte{0x2B, 0xD3, 0x01, 0xD2, 0x05, 0xA0}, afp.KindStructure, 0, "invalid control sequence length 1"},
+		{"truncated chained introducer", chained(0x05), afp.KindStructure, 5, "truncated chained control sequence introducer"},
+		{"invalid chained length", chained(0x01, 0x00), afp.KindStructure, 5, "invalid chained control sequence length 1"},
+		{"chained extends past data", chained(0xFF, 0x00, 0x00), afp.KindStructure, 5, "chained control sequence extends past PTX data"},
+		{"unknown sequence", seq(0xE0, 0x01), afp.KindValidation, 0, "unknown PTOCA control sequence 0xE0"},
+		{"AMB wrong param length", seq(0xD2, 0x05), afp.KindStructure, 0, "control sequence wants 2 param bytes, got 1"},
+		{"SBI wrong param length", seq(0xD0, 0x05), afp.KindStructure, 0, "control sequence wants 2 param bytes, got 1"},
+		{"SIA wrong param length", seq(0xC2, 0x05), afp.KindStructure, 0, "control sequence wants 2 param bytes, got 1"},
+		{"BSU wrong param length", seq(0xF2, 0x01, 0x02), afp.KindStructure, 0, "control sequence wants 1 param bytes, got 2"},
+		{"ESU wrong param length", seq(0xF4, 0x01, 0x02), afp.KindStructure, 0, "control sequence wants 1 param bytes, got 2"},
+		{"SCFL wrong param length", seq(0xF0, 0x01, 0x02), afp.KindStructure, 0, "control sequence wants 1 param bytes, got 2"},
+		{"STO wrong param length", seq(0xF6, 0x00, 0x00), afp.KindStructure, 0, "control sequence wants 4 param bytes, got 2"},
+		{"BLN wrong param length", seq(0xD8, 0x00), afp.KindStructure, 0, "control sequence wants 0 param bytes, got 1"},
+		{"RPS missing RLENGTH", seq(0xEE), afp.KindStructure, 0, "control sequence wants 2 param bytes, got 0"},
+		{"RPS empty RPTDATA", seq(0xEE, 0x00, 0x05), afp.KindStructure, 0, "RPS RLENGTH 5 exceeds available 0 bytes"},
+		{"DIR wrong param length", seq(0xE4, 0x05), afp.KindStructure, 0, "rule sequence wants 2 or 5 param bytes, got 1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := DecodePTOCA(ptxField(tc.payload), testCP(t))
+			if err == nil {
+				t.Fatalf("DecodePTOCA accepted %q", tc.payload)
+			}
+			var derr afp.DecodeError
+			if !errors.As(err, &derr) {
+				t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+			}
+			if derr.FieldID != "D3EE9B" {
+				t.Errorf("FieldID = %q, want D3EE9B", derr.FieldID)
+			}
+			if derr.Kind != tc.wantKind {
+				t.Errorf("Kind = %q, want %q", derr.Kind, tc.wantKind)
+			}
+			if derr.Offset != tc.wantOffset {
+				t.Errorf("Offset = %d, want %d", derr.Offset, tc.wantOffset)
+			}
+			if !strings.Contains(derr.Reason, tc.wantReason) {
+				t.Errorf("Reason = %q, want it to contain %q", derr.Reason, tc.wantReason)
+			}
+		})
 	}
 }
