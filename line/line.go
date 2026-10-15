@@ -10,6 +10,15 @@ import (
 	"math"
 )
 
+// MaxPageDimension bounds page size in points: 0 < Width, Height <= MaxPageDimension.
+// 14,400 points (200 inches) is the practical ceiling for PDF page sizes;
+// anything larger indicates a malformed or hostile input stream.
+const MaxPageDimension = 14400
+
+// MaxCoordinate bounds the absolute value of run coordinates in points:
+// |X|, |Y| <= MaxCoordinate. Negatives remain legal (off-page placement).
+const MaxCoordinate = 14400
+
 // Document is an ordered sequence of pages produced by reduction.
 type Document struct {
 	Pages []Page
@@ -30,7 +39,7 @@ func (d Document) Validate() error {
 type Page struct {
 	Number int // 1-based page number
 	Width  float64
-	Height float64 // page size in points; both must be positive
+	Height float64 // page size in points; both must be in (0, MaxPageDimension]
 	Runs   []TextRun
 }
 
@@ -39,11 +48,11 @@ func (p Page) Validate() error {
 	if p.Number < 1 {
 		return ValidationError{Where: "page", Reason: fmt.Sprintf("number %d < 1", p.Number)}
 	}
-	if !(p.Width > 0) || math.IsNaN(p.Width) || math.IsInf(p.Width, 0) {
-		return ValidationError{Where: "page", Reason: fmt.Sprintf("non-positive width %v", p.Width)}
+	if math.IsNaN(p.Width) || math.IsInf(p.Width, 0) || p.Width <= 0 || p.Width > MaxPageDimension {
+		return ValidationError{Where: "page", Reason: fmt.Sprintf("width %v outside (0, %v]", p.Width, MaxPageDimension)}
 	}
-	if !(p.Height > 0) || math.IsNaN(p.Height) || math.IsInf(p.Height, 0) {
-		return ValidationError{Where: "page", Reason: fmt.Sprintf("non-positive height %v", p.Height)}
+	if math.IsNaN(p.Height) || math.IsInf(p.Height, 0) || p.Height <= 0 || p.Height > MaxPageDimension {
+		return ValidationError{Where: "page", Reason: fmt.Sprintf("height %v outside (0, %v]", p.Height, MaxPageDimension)}
 	}
 	for i, r := range p.Runs {
 		if err := r.Validate(); err != nil {
@@ -66,14 +75,23 @@ func (r TextRun) Validate() error {
 	if !(r.FontSize > 0) || math.IsNaN(r.FontSize) || math.IsInf(r.FontSize, 0) {
 		return ValidationError{Where: "run", Reason: fmt.Sprintf("non-positive font size %v", r.FontSize)}
 	}
-	if math.IsNaN(r.X) || math.IsInf(r.X, 0) {
-		return ValidationError{Where: "run", Reason: fmt.Sprintf("non-finite X %v", r.X)}
+	if math.IsNaN(r.X) || math.IsInf(r.X, 0) || math.Abs(r.X) > MaxCoordinate {
+		return ValidationError{Where: "run", Reason: fmt.Sprintf("X %v outside [-%v, %v]", r.X, MaxCoordinate, MaxCoordinate)}
 	}
-	if math.IsNaN(r.Y) || math.IsInf(r.Y, 0) {
-		return ValidationError{Where: "run", Reason: fmt.Sprintf("non-finite Y %v", r.Y)}
+	if math.IsNaN(r.Y) || math.IsInf(r.Y, 0) || math.Abs(r.Y) > MaxCoordinate {
+		return ValidationError{Where: "run", Reason: fmt.Sprintf("Y %v outside [-%v, %v]", r.Y, MaxCoordinate, MaxCoordinate)}
 	}
 	if r.FontID == "" {
 		return ValidationError{Where: "run", Reason: "empty font ID"}
+	}
+	// C1 controls have no WinAnsi encoding; reject per policy, not mapped.
+	// The check runs on the decoded Unicode rune, independent of code page:
+	// a byte stream's 0x80–0x9F range may be printable (e.g. Windows-1252),
+	// but a decoded rune in U+0080–U+009F is always a C1 control.
+	for _, c := range r.Text {
+		if c >= 0x80 && c <= 0x9F {
+			return ValidationError{Where: "run", Reason: fmt.Sprintf("C1 control character U+%04X has no WinAnsi encoding", c)}
+		}
 	}
 	return nil
 }

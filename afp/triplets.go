@@ -90,6 +90,7 @@ func DecodeTriplet(b []byte) (Triplet, int, error) {
 	if len(b) < 2 {
 		return Triplet{}, 0, DecodeError{
 			Offset: 0,
+			Kind:   KindStructure,
 			Reason: fmt.Sprintf("truncated triplet: need 2 header bytes, have %d", len(b)),
 		}
 	}
@@ -97,12 +98,14 @@ func DecodeTriplet(b []byte) (Triplet, int, error) {
 	if tlen < minTripletLen || tlen > maxTripletLen {
 		return Triplet{}, 0, DecodeError{
 			Offset: 0,
+			Kind:   KindStructure,
 			Reason: fmt.Sprintf("invalid Tlength %d: range %d..%d", tlen, minTripletLen, maxTripletLen),
 		}
 	}
 	if len(b) < tlen {
 		return Triplet{}, 0, DecodeError{
 			Offset: 0,
+			Kind:   KindStructure,
 			Reason: fmt.Sprintf("truncated triplet: Tlength %d, have %d bytes", tlen, len(b)),
 		}
 	}
@@ -110,6 +113,7 @@ func DecodeTriplet(b []byte) (Triplet, int, error) {
 	if _, ok := knownTripletIDs[tid]; !ok {
 		return Triplet{}, 0, DecodeError{
 			Offset: 0,
+			Kind:   KindValidation,
 			Reason: fmt.Sprintf("unknown triplet ID X'%02X: not in contracted subset", tid),
 		}
 	}
@@ -184,6 +188,7 @@ func RoundTrip(r io.Reader) error {
 			return DecodeError{
 				FieldID: f.TypeID(),
 				Offset:  i,
+				Kind:    KindStructure,
 				Reason:  "re-encode differs from input: round-trip gate failed",
 			}
 		}
