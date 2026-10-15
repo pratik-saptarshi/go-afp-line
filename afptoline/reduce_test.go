@@ -821,3 +821,235 @@ func TestReduce_BAGEdgeCases(t *testing.T) {
 		})
 	}
 }
+
+// TestReduceWithBudget_ReadError: a failing reader surfaces as the "read
+// input" wrapper — the first error return in the reduce pipeline, and it is
+// not an afp.DecodeError (no field was decoded).
+func TestReduceWithBudget_ReadError(t *testing.T) {
+	_, _, err := ReduceWithBudget(errReader{}, 4096)
+	if err == nil {
+		t.Fatal("ReduceWithBudget accepted a failing reader")
+	}
+	var derr afp.DecodeError
+	if errors.As(err, &derr) {
+		t.Fatalf("error = %v: a read failure is not a DecodeError", err)
+	}
+	if !strings.Contains(err.Error(), "read input") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "read input")
+	}
+}
+
+// TestReduce_Corrupt5AMarker: a corrupt record marker on a later 5A-wrapped
+// field fails the reduction through SplitFields (C1's loud check), with the
+// stream offset of the damaged record — not the PTX offset machinery.
+func TestReduce_Corrupt5AMarker(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	epg := rawField(tEPG, ebcdicSpaces(8))
+
+	var buf bytes.Buffer
+	buf.WriteByte(0x5A)
+	buf.Write(bdt)
+	buf.WriteByte(0x5A)
+	buf.Write(bpg)
+	buf.WriteByte(0x00) // corrupt marker: stream damage, not a skippable byte
+	buf.Write(epg)
+
+	_, _, err := Reduce(&buf)
+	if err == nil {
+		t.Fatal("Reduce accepted a 5A-wrapped stream with a corrupt record marker")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+	}
+	if derr.Kind != afp.KindStructure {
+		t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindStructure)
+	}
+	if !strings.Contains(derr.Reason, "expected 5A record marker") {
+		t.Errorf("Reason = %q, want it to contain %q", derr.Reason, "expected 5A record marker")
+	}
+	if want := (1 + len(bdt)) + (1 + len(bpg)); derr.Offset != want {
+		t.Errorf("Offset = %d, want %d (start of the damaged record)", derr.Offset, want)
+	}
+}
+
+// TestReduce_ReducerFailSites: every st.fail site in the reducer, pinned with
+// the expected Kind and naming. Sites already covered elsewhere (cited here,
+// not duplicated):
+//   - nested BDT / EDT without BDT / EDT with open page / BPG outside
+//     document / nested BPG / EPG without BPG / PTX outside page / open
+//     document at finish: TestReduce_PairingErrors
+//   - EPG with open BAG: TestReduce_BAGMustNotCrossEPG
+//   - EPG with open BPT: TestReduce_BPTMustNotCrossEPG
+//   - BAG nested in page: TestReduce_BAGEdgeCases
+//   - PTX decode budget error (wrapped with PTX identity): TestReduceWithBudget_RPSAmplification
+//   - PTX C1 rejection: TestReduce_RejectsC1Controls
+//   - visitPTX post-decode budget cap (n > st.textLeft): unreachable — the
+//     decoder's fail-fast aborts on the same bytes first; kept as
+//     defense-in-depth, documented in reduce.go.
+//   - DecodeField length-mismatch check: unreachable via Reduce —
+//     SplitFields always emits exactly the declared field bytes; covered for
+//     direct callers in the afp package.
+func TestReduce_ReducerFailSites(t *testing.T) {
+	tBNG := [3]byte{0xD3, 0xA8, 0xAD}
+	tENG := [3]byte{0xD3, 0xA9, 0xAD}
+	tMCF := [3]byte{0xD3, 0xAB, 0x8A}
+	tPTD := [3]byte{0xD3, 0xB1, 0x9B}
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	epg := rawField(tEPG, ebcdicSpaces(8))
+	bng := rawField(tBNG, ebcdicSpaces(8))
+	eng := rawField(tENG, ebcdicSpaces(8))
+	bag := rawField(tBAG, nil)
+	eag := rawField(tEAG, nil)
+	bpt := rawField(tBPT, nil)
+	ept := rawField(tEPT, nil)
+	mcf := rawField(tMCF, ebcdicSpaces(8))
+	ptd := rawField(tPTD, ebcdicSpaces(8))
+	// PTX whose SCFL selects local font ID 5: no pinned metrics mapping
+	// exists, so fontIDForLID fails the reduction loudly.
+	ptxSCFL := rawField(tPTX, append(seq(0xF0, 0x05), trn(0xC1)...))
+	// PTX whose control sequence extends past the PTX data: the decoder
+	// error passes through visitPTX unwrapped (only budget errors are
+	// re-attributed).
+	ptxTrunc := rawField(tPTX, []byte{0x2B, 0xD3, 0xFF, 0xD2, 0x00})
+
+	cases := []struct {
+		name       string
+		stream     [][]byte
+		wantKind   afp.ErrorKind
+		wantReason string // substring
+		wantID     string // expected FieldID ("" when the error sets none)
+	}{
+		{"EDT with unclosed BNG", [][]byte{bdt, bng, edt}, afp.KindStructure, "EDT with unclosed group", "D3A9A8"},
+		{"BNG outside document", [][]byte{bng}, afp.KindStructure, "BNG in illegal position", "D3A8AD"},
+		{"BNG nested", [][]byte{bdt, bng, bng}, afp.KindStructure, "BNG in illegal position", "D3A8AD"},
+		{"BNG on open page", [][]byte{bdt, bpg, bng}, afp.KindStructure, "BNG in illegal position", "D3A8AD"},
+		{"ENG without BNG", [][]byte{bdt, eng}, afp.KindStructure, "ENG without BNG", "D3A9AD"},
+		{"BAG outside document", [][]byte{bag}, afp.KindStructure, "BAG in illegal position", "D3A8C9"},
+		{"BAG outside page", [][]byte{bdt, bag}, afp.KindStructure, "BAG in illegal position", "D3A8C9"},
+		{"EAG without BAG", [][]byte{bdt, eag}, afp.KindStructure, "EAG without BAG", "D3A9C9"},
+		{"BPT outside page", [][]byte{bdt, bpt}, afp.KindStructure, "BPT outside page or nested", "D3A89B"},
+		{"BPT nested", [][]byte{bdt, bpg, bpt, bpt}, afp.KindStructure, "BPT outside page or nested", "D3A89B"},
+		{"EPT without BPT", [][]byte{bdt, ept}, afp.KindStructure, "EPT without BPT", "D3A99B"},
+		{"MCF outside document", [][]byte{mcf}, afp.KindStructure, "environment field outside document", "D3AB8A"},
+		{"PTD outside document", [][]byte{ptd}, afp.KindStructure, "environment field outside document", "D3B19B"},
+		{"SCFL nonzero LID", [][]byte{bdt, bpg, ptxSCFL, epg, edt}, afp.KindValidation, "SCFL local font ID 5", ""},
+		{"PTX decoder error passes through", [][]byte{bdt, bpg, ptxTrunc, epg, edt}, afp.KindStructure, "control sequence extends past PTX data", "D3EE9B"},
+		{"finish with open page", [][]byte{bdt, bpg}, afp.KindStructure, "end of stream with open page: missing EPG", ""},
+		{"finish with unclosed group", [][]byte{bdt, bng}, afp.KindStructure, "end of stream with unclosed group", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			for _, f := range tc.stream {
+				buf.Write(f)
+			}
+			_, _, err := Reduce(&buf)
+			if err == nil {
+				t.Fatalf("Reduce accepted %s", tc.name)
+			}
+			var derr afp.DecodeError
+			if !errors.As(err, &derr) {
+				t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+			}
+			if derr.Kind != tc.wantKind {
+				t.Errorf("Kind = %q, want %q", derr.Kind, tc.wantKind)
+			}
+			if !strings.Contains(derr.Reason, tc.wantReason) {
+				t.Errorf("Reason = %q, want it to contain %q", derr.Reason, tc.wantReason)
+			}
+			if derr.FieldID != tc.wantID {
+				t.Errorf("FieldID = %q, want %q", derr.FieldID, tc.wantID)
+			}
+		})
+	}
+}
+
+// TestReduce_BNGENGAndMCFValid: the valid counterparts of the fail sites
+// above — balanced BNG/ENG brackets the document and an in-document MCF is
+// accepted (v1: noted, parameters uninterpreted), not an abort.
+func TestReduce_BNGENGAndMCFValid(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bng := rawField([3]byte{0xD3, 0xA8, 0xAD}, ebcdicSpaces(8))
+	eng := rawField([3]byte{0xD3, 0xA9, 0xAD}, ebcdicSpaces(8))
+	mcf := rawField([3]byte{0xD3, 0xAB, 0x8A}, ebcdicSpaces(8))
+
+	var buf bytes.Buffer
+	for _, f := range [][]byte{bdt, bng, mcf, eng, edt} {
+		buf.Write(f)
+	}
+	doc, excls, err := Reduce(&buf)
+	if err != nil {
+		t.Fatalf("Reduce: %v", err)
+	}
+	if len(doc.Pages) != 0 {
+		t.Fatalf("got %d pages, want 0", len(doc.Pages))
+	}
+	if len(excls) != 0 {
+		t.Fatalf("got %d exclusions, want 0: %v", len(excls), excls)
+	}
+}
+
+// bogusField implements afp.Field with a concrete type the reducer's visit
+// switch never names: it reaches the defensive default branch.
+type bogusField struct{}
+
+func (bogusField) TypeID() string { return "D30000" }
+func (bogusField) Encode() []byte { return nil }
+
+// TestReduce_VisitUnhandledFieldType: the visit switch's defensive default
+// fails loudly (KindValidation) instead of silently ignoring the field. It
+// is unreachable through DecodeField — every typed field the registry
+// produces is handled — so it is pinned by direct visit.
+func TestReduce_VisitUnhandledFieldType(t *testing.T) {
+	st := &reduceState{}
+	err := st.visit(bogusField{})
+	if err == nil {
+		t.Fatal("visit accepted an unhandled field type")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+	}
+	if derr.Kind != afp.KindValidation {
+		t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindValidation)
+	}
+	if !strings.Contains(derr.Reason, "unhandled field type in reduction walk") {
+		t.Errorf("Reason = %q, want it to contain %q", derr.Reason, "unhandled field type in reduction walk")
+	}
+	if derr.FieldID != "D30000" {
+		t.Errorf("FieldID = %q, want D30000", derr.FieldID)
+	}
+}
+
+// TestReduce_VisitRawUnknownContractedField: the visitRaw switch's defensive
+// default. A non-excluded RawField whose type ID no case handles must fail
+// loudly. Unreachable through DecodeField (all contracted IDs are cased),
+// so pinned by direct visit.
+func TestReduce_VisitRawUnknownContractedField(t *testing.T) {
+	f := &afp.RawField{
+		Intro: afp.Introducer{Length: 8, TypeID: [3]byte{0xD3, 0x00, 0x00}},
+	}
+	st := &reduceState{inDoc: true}
+	if err := st.visit(f); err == nil {
+		t.Fatal("visit accepted a contracted field without v1 reduction semantics")
+	} else {
+		var derr afp.DecodeError
+		if !errors.As(err, &derr) {
+			t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+		}
+		if derr.Kind != afp.KindValidation {
+			t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindValidation)
+		}
+		if !strings.Contains(derr.Reason, "contracted field without v1 reduction semantics") {
+			t.Errorf("Reason = %q, want it to contain %q", derr.Reason, "contracted field without v1 reduction semantics")
+		}
+		if derr.FieldID != "D30000" {
+			t.Errorf("FieldID = %q, want D30000", derr.FieldID)
+		}
+	}
+}
