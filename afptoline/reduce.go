@@ -261,13 +261,17 @@ func (st *reduceState) visitPTX(t *afp.RawField) error {
 	if st.page == nil {
 		return st.fail(t.TypeID(), afp.KindStructure, "PTX outside page")
 	}
-	runs, err := decodePTOCA(t, st.cp, st.textLeft)
+	runs, err := decodePTOCA(t, st.cp, st.textLeft, st.advanceFunc())
 	if err != nil {
 		// The decoder's fail-fast budget error carries no field context;
 		// attach the offending PTX's identity and true wire offset here.
+		// Advance errors (unmapped font, bad width) likewise carry no
+		// FieldID; every other error reachable through visitPTX sets one
+		// (the decoder's own errors carry FieldID "D3EE9B"), so empty is a
+		// reliable discriminator on this path.
 		var derr afp.DecodeError
-		if errors.As(err, &derr) && derr.Kind == afp.KindBudget {
-			return afp.DecodeError{FieldID: t.TypeID(), Offset: st.off, Kind: afp.KindBudget, Reason: derr.Reason}
+		if errors.As(err, &derr) && (derr.Kind == afp.KindBudget || derr.FieldID == "") {
+			return afp.DecodeError{FieldID: t.TypeID(), Offset: st.off, Kind: derr.Kind, Reason: derr.Reason}
 		}
 		return err
 	}
@@ -312,6 +316,27 @@ func (st *reduceState) visitPTX(t *afp.RawField) error {
 		})
 	}
 	return nil
+}
+
+// advanceFunc returns the reducer's inline-advance closure for the PTOCA
+// decoder: SCFL local ID → pinned font metrics → width in points at the
+// default size. Unmapped fonts and unknown registry IDs fail loudly;
+// v1 never guesses metrics.
+func (st *reduceState) advanceFunc() advanceFunc {
+	return func(lid byte, text string) (float64, error) {
+		id, err := fontIDForLID(lid, st.off)
+		if err != nil {
+			return 0, err
+		}
+		m, ok := line.LookupFont(id)
+		if !ok {
+			return 0, afp.DecodeError{
+				Kind:   afp.KindValidation,
+				Reason: fmt.Sprintf("pinned font %q has no metrics", id),
+			}
+		}
+		return m.Width(text, defaultFontSize), nil
+	}
 }
 
 // fontIDForLID maps a PTOCA SCFL local font ID to a pinned line font ID.
