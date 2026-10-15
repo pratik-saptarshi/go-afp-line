@@ -114,6 +114,56 @@ func TestAdvance_PropagatesClosureError(t *testing.T) {
 	}
 }
 
+func TestAdvance_SIAAcrossSCFLRunSplit(t *testing.T) {
+	// Codex P2: SIA 5, "A", SCFL 0, "B" — A and B form one word across the
+	// font change, so B starts at Width("A") + 5 L-units = 6.25pt.
+	p := append(seq(0xC2, 0x00, 0x05), trn(0xC1)...)
+	p = append(p, seq(0xF0, 0x00)...)
+	p = append(p, trn(0xC2)...)
+	runs := decodeWithAdv(t, p, stubAdv)
+	if len(runs) != 2 {
+		t.Fatalf("got %d runs, want 2", len(runs))
+	}
+	approx(t, "run2 X", runs[1].X, 6.25)
+}
+
+func TestAdvance_SIANoGapAcrossLeadingSpace(t *testing.T) {
+	// SIA 5, "A", SCFL 0, " B": the space ends the word — no inter-run gap.
+	p := append(seq(0xC2, 0x00, 0x05), trn(0xC1)...)
+	p = append(p, seq(0xF0, 0x00)...)
+	p = append(p, trn(0x40, 0xC2)...)
+	runs := decodeWithAdv(t, p, stubAdv)
+	if len(runs) != 2 {
+		t.Fatalf("got %d runs, want 2", len(runs))
+	}
+	approx(t, "run2 X", runs[1].X, 6)
+}
+
+func TestAdvance_SIANoGapAcrossMove(t *testing.T) {
+	// SIA 5, "A", RMI 0, "B": even a zero move breaks the word for SIA.
+	p := append(seq(0xC2, 0x00, 0x05), trn(0xC1)...)
+	p = append(p, seq(0xC8, 0x00, 0x00)...)
+	p = append(p, trn(0xC2)...)
+	runs := decodeWithAdv(t, p, stubAdv)
+	if len(runs) != 2 {
+		t.Fatalf("got %d runs, want 2", len(runs))
+	}
+	approx(t, "run2 X", runs[1].X, 6)
+}
+
+func TestAdvance_SIANoGapAroundSpaces(t *testing.T) {
+	// SIA 5, "A B" (one run), SCFL 0, "C": no sia around the space, but the
+	// B/C inter-run gap applies. C at (3*120 + 5)/20 = 18.25pt.
+	p := append(seq(0xC2, 0x00, 0x05), trn(0xC1, 0x40, 0xC2)...)
+	p = append(p, seq(0xF0, 0x00)...)
+	p = append(p, trn(0xC3)...)
+	runs := decodeWithAdv(t, p, stubAdv)
+	if len(runs) != 2 {
+		t.Fatalf("got %d runs, want 2", len(runs))
+	}
+	approx(t, "run2 X", runs[1].X, 18.25)
+}
+
 func TestAdvance_OverstrikeRMIBackToZero(t *testing.T) {
 	// "Hi", RMI -240 L-units (back over the just-advanced width), "Hi".
 	// A reducer post-pass would place run 2 at 12pt; the state machine

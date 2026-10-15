@@ -52,22 +52,26 @@ The A3 fail-fast budget is preserved by threading `maxBytes` alongside
 precedent). The decoder stays font-agnostic; `adv` is stored on
 `ptocaState`.
 
-**Advance formula (sia folded in).** In `flush()`, after appending the run:
+**Advance formula (sia folded in, word-aware).** In `flush()`, after appending the run:
 
 ```
 text   = st.cp.Decode(st.cur)          // already decoded for the run
 w, err = st.adv(st.curFont, text)      // width in points; may fail (see errors)
 reject w if NaN, ±Inf, or < 0         // width-domain contract, enforced at consumption
-gaps   = max(runeCount(text) - 1, 0)   // intercharacter gaps; 0 for empty/single-char
+runes  = []rune(text)
+gaps   = #{i : runes[i] and runes[i+1] are word chars}   // inword gaps
+       + (1 if st.prevWord and runes[0] is a word char)  // inter-run gap
 st.ic += w*lUnitsPerPoint + float64(st.sia)*float64(gaps)
+st.prevWord = len(runes) > 0 and last rune is a word char
 ```
 
-Framing (per the judge): the hook advance equals the decoder's tracked
-x-delta over the run, so `sia`/`svi` handling falls out of decoder state
-instead of being re-derived. `sia` is an int16 in L-units, signed —
-negative values tighten spacing naturally. Boundary semantics: sia applies
-per intercharacter gap (N−1 for N runes), not per character. `svi` stays
-excluded: see "Documented limitations".
+Per the PTOCA reference, SIA inserts only between characters forming a
+word — not across spaces, and not across run splits that break the word.
+`st.prevWord` tracks whether the last presented character was a word char
+with no intervening position change; moves (AMI/RMI/AMB...), new lines
+(BLN), and suppression boundaries (BSU) clear it, SCFL does not. v1's only
+word delimiter is U+0020. sia is int16 L-units, signed; negative tightens.
+A mid-run SIA change applies the final value (SIA does not split runs).
 
 **Error contract.** Advance failures are Kind-tagged without field context;
 `visitPTX` re-attaches identity, generalizing the `KindBudget` precedent
@@ -111,11 +115,9 @@ points at `defaultFontSize` (10.0); `flush()` converts ×20 (`lUnitsPerPoint`).
   SVI was ever non-zero in the PTX and, if so, either apply per-space
   increments (needs char-class rulings on what counts as "space" post-decode)
   or fail loudly — do not silently widen the gap.
-- SIA is applied per intercharacter gap (N−1), but v1 counts gaps adjacent
-  to spaces too; per the PTOCA reference SIA inserts only between characters
-  forming a word. Over-advance is 2×sia per space; nil at sia=0 (the
-  initialized value). A mid-run SIA change applies the final value to all
-  gaps of the merged run (SIA does not split runs).
+- SIA is applied per intercharacter gap between word characters (U+0020 is
+  the only delimiter); a mid-run SIA change applies the final value to the
+  merged run (SIA does not split runs).
 - STO non-horizontal orientation: v1 assumes horizontal text; advancement
   along a rotated axis is out of scope (note, don't handle).
 - The single-field wrapped-stream `finish()` offset residual is unaffected.

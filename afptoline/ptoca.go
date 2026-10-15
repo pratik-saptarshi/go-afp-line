@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
-	"unicode/utf8"
 
 	"github.com/pratik-saptarshi/go-afp-line/afp"
 )
@@ -39,16 +38,21 @@ type Run struct {
 // ptocaState is the PTOCA presentation state: current position plus the modal
 // parameters set by control sequences.
 type ptocaState struct {
-	ic, bc   float64 // current presentation position, L-units
-	imargin  float64 // SIM inline margin, L-units
-	incr     float64 // SBI baseline increment, L-units
-	sia      int16   // SIA intercharacter adjustment, L-units; folded into flush() advancement
-	svi      uint16  // SVI variable-space character increment (tracked)
-	fontID   byte    // SCFL local font identifier
-	color    []byte  // STC raw color specification (tracked)
-	iornt    uint16  // STO I-axis orientation
-	bornt    uint16  // STO B-axis orientation
-	suppress []byte  // BSU LID stack; non-empty means text is suppressed
+	ic, bc  float64 // current presentation position, L-units
+	imargin float64 // SIM inline margin, L-units
+	incr    float64 // SBI baseline increment, L-units
+	sia     int16   // SIA intercharacter adjustment, L-units; folded into flush() advancement
+	svi     uint16  // SVI variable-space character increment (tracked)
+	// prevWord tracks whether the last presented graphic character was a
+	// word character with no intervening position change or word break, so
+	// flush() can apply the SIA inter-run gap. Moves, new lines, and
+	// suppression boundaries clear it; SCFL does not.
+	prevWord bool
+	fontID   byte   // SCFL local font identifier
+	color    []byte // STC raw color specification (tracked)
+	iornt    uint16 // STO I-axis orientation
+	bornt    uint16 // STO B-axis orientation
+	suppress []byte // BSU LID stack; non-empty means text is suppressed
 
 	cp  afp.CodePage
 	cur []byte // pending text bytes for the run being accumulated
@@ -131,18 +135,30 @@ func (st *ptocaState) flush() error {
 			Reason: fmt.Sprintf("advance width %v out of domain (want finite, non-negative)", w),
 		}
 	}
-	// SIA applies per intercharacter gap: N runes → N-1 gaps, none for a
-	// single character. sia is int16 L-units, signed; negative tightens.
-	// v1 limitation: gaps adjacent to spaces count too. Per the PTOCA
-	// reference, SIA inserts only between characters forming a word, not
-	// between words — a run like "hello world" over-advances by 2×sia per
-	// space. Impact is nil at sia=0 (the initialized value); inword gating
-	// is future work. A mid-run SIA change likewise applies the final value
-	// to all gaps of the merged run (SIA does not split runs).
-	gaps := max(utf8.RuneCountInString(text)-1, 0)
+	// SIA applies per intercharacter gap, but only between characters that
+	// form a word — not across spaces or run splits that break the word.
+	// Gaps are counted inside the run (both neighbors word characters) plus
+	// one inter-run gap when the previous presented character was a word
+	// character and this run starts with one. sia is int16 L-units, signed;
+	// negative tightens. v1 treats only U+0020 as the word delimiter.
+	runes := []rune(text)
+	gaps := 0
+	for i := 0; i+1 < len(runes); i++ {
+		if isWordChar(runes[i]) && isWordChar(runes[i+1]) {
+			gaps++
+		}
+	}
+	if st.prevWord && len(runes) > 0 && isWordChar(runes[0]) {
+		gaps++
+	}
 	st.ic += w*lUnitsPerPoint + float64(st.sia)*float64(gaps)
+	st.prevWord = len(runes) > 0 && isWordChar(runes[len(runes)-1])
 	return nil
 }
+
+// isWordChar reports whether r can take SIA on either side. v1's only word
+// delimiter is the space (U+0020), per the PTOCA reference's SIA rule.
+func isWordChar(r rune) bool { return r != ' ' }
 
 // curX, curY, curFont record where the pending run started.
 func (st *ptocaState) markStart() {
@@ -321,6 +337,8 @@ func doMove(apply func(st *ptocaState, v int16)) handler {
 		if err := st.flush(); err != nil {
 			return err
 		}
+		// A move breaks the word for SIA: no adjustment across it.
+		st.prevWord = false
 		apply(st, int16(binary.BigEndian.Uint16(params)))
 		return nil
 	}
@@ -373,6 +391,8 @@ func doBSU(st *ptocaState, params []byte, offset int) error {
 	if err := st.flush(); err != nil {
 		return err
 	}
+	// Suppression breaks the word: suppressed text is never presented.
+	st.prevWord = false
 	st.suppress = append(st.suppress, params[0])
 	return nil
 }
@@ -494,6 +514,8 @@ func doBLN(st *ptocaState, params []byte, offset int) error {
 	if err := st.flush(); err != nil {
 		return err
 	}
+	// A new line breaks the word for SIA.
+	st.prevWord = false
 	st.ic = st.imargin
 	st.bc += st.incr
 	return nil
