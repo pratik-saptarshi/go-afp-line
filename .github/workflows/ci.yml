@@ -21,4 +21,16 @@ jobs:
       - name: install poppler
         run: sudo apt-get update && sudo apt-get install -y poppler-utils
       - name: test
-        run: go test -race ./...
+        run: go test -race -shuffle=on ./...
+      - name: coverage floor
+        # Coverage floor: the build fails if total statement coverage drops
+        # below 85%. Measured total coverage when the floor was set
+        # (2026-10-15): 87.7%. Re-measure and raise the floor if coverage
+        # improves materially.
+        run: |
+          FLOOR=85
+          go test -shuffle=on -coverprofile=coverage.out ./... > /dev/null
+          TOTAL=$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%$/, "", $3); print $3}')
+          echo "total coverage: ${TOTAL}% (floor: ${FLOOR}%)"
+          awk -v got="${TOTAL}" -v want="${FLOOR}" 'BEGIN {exit !(got >= want)}' \
+            || { echo "coverage ${TOTAL}% is below floor ${FLOOR}%"; exit 1; }
