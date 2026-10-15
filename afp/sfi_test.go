@@ -241,3 +241,29 @@ func TestSplitFields_ValidMarkersStillParse(t *testing.T) {
 		}
 	}
 }
+
+// TestIntroducerEncode_RangePanics: Encode must fail loudly (not wrap) on
+// wire-unrepresentable Length, mirroring DecodeIntroducer's 8..32767 range.
+func TestIntroducerEncode_RangePanics(t *testing.T) {
+	base := Introducer{TypeID: [3]byte{0xD3, 0xA8, 0xA8}}
+	for _, length := range []int{0, 7, 32768, 70000} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("Introducer{Length: %d}.Encode() did not panic", length)
+				}
+			}()
+			in := base
+			in.Length = length
+			_ = in.Encode()
+		}()
+	}
+	// Boundary values still encode.
+	for _, length := range []int{8, 32767} {
+		in := base
+		in.Length = length
+		if got := in.Encode(); len(got) < 2 || int(got[0])<<8|int(got[1]) != length {
+			t.Errorf("Introducer{Length: %d}.Encode() = %x, want length prefix %d", length, got, length)
+		}
+	}
+}

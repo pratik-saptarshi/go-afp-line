@@ -71,6 +71,12 @@ func (in Introducer) HasPadding() bool { return in.Flags&flagPad != 0 }
 // Encode serializes the introducer back to its wire bytes.
 // Decode followed by Encode is byte-identical for the introducer.
 func (in Introducer) Encode() []byte {
+	// Mirror DecodeIntroducer's 8..32767 range: a wire-unrepresentable
+	// Length can only come from post-decode caller mutation (programmer
+	// error), so fail loudly rather than wrapping the length bytes.
+	if in.Length < sfiLen || in.Length > maxSFLength {
+		panic(fmt.Sprintf("afp: cannot encode introducer with length %d (want %d..%d)", in.Length, sfiLen, maxSFLength))
+	}
 	b := make([]byte, 0, sfiLen+len(in.Extension))
 	b = append(b, byte(in.Length>>8), byte(in.Length))
 	b = append(b, in.TypeID[0], in.TypeID[1], in.TypeID[2], in.Flags, in.Reserved[0], in.Reserved[1])
