@@ -251,3 +251,87 @@ func TestAcronym(t *testing.T) {
 		}
 	}
 }
+
+func TestEncodeCHAR8_FullReverseTable(t *testing.T) {
+	// Every EBCDIC-037 byte must survive decodeCHAR -> encodeCHAR8: the
+	// decode table is injective, so the reverse map is total over decoded
+	// output. The old ASCII-only reverse map turned e.g. 0x42 ('â') into
+	// '?' (0x6F), breaking the byte-identical RoundTrip gate.
+	for v := 0; v < 256; v++ {
+		s := decodeCHAR([]byte{byte(v)})
+		enc := encodeCHAR8(s)
+		if len(enc) != 8 {
+			t.Fatalf("byte 0x%02X: encodeCHAR8 len = %d, want 8", v, len(enc))
+		}
+		if enc[0] != byte(v) {
+			t.Errorf("byte 0x%02X: round trip gave 0x%02X (via %q)", v, enc[0], s)
+		}
+	}
+}
+
+func TestBDT_NonASCIIDecodableNameRoundTrips(t *testing.T) {
+	// DocName "DOCâ    " (0x42 = U+00E2 â): decode yields non-ASCII runes
+	// that still have EBCDIC-037 mappings, so re-encode must be
+	// byte-identical — no silent '?' substitution.
+	raw := []byte{
+		0x00, 0x12, 0xD3, 0xA8, 0xA8, 0x00, 0x00, 0x00,
+		0xC4, 0xD6, 0xC3, 0x42, 0x40, 0x40, 0x40, 0x40, // "DOCâ    "
+		0x00, 0x00,
+	}
+	f, err := DecodeField(raw)
+	if err != nil {
+		t.Fatalf("DecodeField(BDT) error: %v", err)
+	}
+	bdt, ok := f.(*BDT)
+	if !ok {
+		t.Fatalf("type = %T, want *BDT", f)
+	}
+	if bdt.DocName != "DOCâ" {
+		t.Fatalf("DocName = %q, want %q", bdt.DocName, "DOCâ")
+	}
+	if enc := f.Encode(); !bytes.Equal(enc, raw) {
+		t.Errorf("Encode() = %X, want %X", enc, raw)
+	}
+}
+
+func TestEncodeCHAR8_UnmappableRunePanics(t *testing.T) {
+	// U+20AC EURO SIGN has no EBCDIC-037 mapping: loud panic, never '?'.
+	assertPanics(t, "encodeCHAR8 unmappable rune", func() {
+		encodeCHAR8("DOC€0001")
+	})
+}
+
+func TestEncodeCHAR8_TooLongPanics(t *testing.T) {
+	// 9 characters cannot fit CHAR[8]: loud panic, never truncation.
+	assertPanics(t, "encodeCHAR8 >8 characters", func() {
+		encodeCHAR8("TOOLONG99")
+	})
+}
+
+func TestBDT_EncodeUnmappableDocNamePanics(t *testing.T) {
+	// Post-decode mutation to a name with no EBCDIC-037 mapping must fail
+	// loudly at Encode, not substitute '?'.
+	f, err := DecodeField(bdtHello)
+	if err != nil {
+		t.Fatalf("DecodeField(BDT) error: %v", err)
+	}
+	bdt := f.(*BDT)
+	bdt.DocName = "DOC€0001"
+	assertPanics(t, "BDT.Encode with unmappable DocName", func() {
+		bdt.Encode()
+	})
+}
+
+func TestBDT_EncodeTooLongDocNamePanics(t *testing.T) {
+	// Post-decode mutation to a 9-character name must fail loudly at
+	// Encode, not truncate to 8.
+	f, err := DecodeField(bdtHello)
+	if err != nil {
+		t.Fatalf("DecodeField(BDT) error: %v", err)
+	}
+	bdt := f.(*BDT)
+	bdt.DocName = "TOOLONG99"
+	assertPanics(t, "BDT.Encode with >8-char DocName", func() {
+		bdt.Encode()
+	})
+}
