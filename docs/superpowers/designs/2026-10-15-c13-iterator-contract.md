@@ -226,6 +226,8 @@ decisions below are part of the approved contract.
    is updated to assert the new text (see Accepted changes §1).
 4. **Keep `IsWrapped` exported** — compat; it documents the framing
    predicate and advertises itself for offset accounting.
+   (Superseded by F01: `IsWrapped` is now unexported — it was referenced
+   only inside `afp`.)
 5. **Keep the minimal `StreamField{Data []byte, Offset int}` surface** —
    the wire offset subsumes what consumers need; no `Wrapped()`
    (YAGNI).
