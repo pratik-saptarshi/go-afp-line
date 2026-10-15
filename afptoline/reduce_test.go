@@ -672,3 +672,152 @@ func TestReduceWithCodePage_IMMNameDecoding(t *testing.T) {
 		t.Errorf("diagnostic %q does not contain cp500-decoded name %q", d, "[")
 	}
 }
+
+// TestReduceWithBudget_RPSBoundaryEdges: RPS edge cases pinned end-to-end
+// through ReduceWithBudget. The white-box decoder equivalents of
+// RLENGTH==0 (no-op) and RLENGTH==len(RPTDATA) (transparent-equivalent) are
+// already covered by TestDecodePTOCA_RPS_ZeroLengthNoOp and
+// TestDecodePTOCA_RPS_Repeat; these rows pin the reduce-level behavior plus
+// the amplification boundary, which A3's exact-budget test exercises only
+// with raw text (never an RPS sequence).
+func TestReduceWithBudget_RPSBoundaryEdges(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	epg := rawField(tEPG, ebcdicSpaces(8))
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	build := func(rlength uint16, rptdata ...byte) []byte {
+		params := append([]byte{byte(rlength >> 8), byte(rlength)}, rptdata...)
+		ptx := rawField(tPTX, seq(0xEE, params...))
+		var buf bytes.Buffer
+		for _, f := range [][]byte{bdt, bpg, ptx, epg, edt} {
+			buf.Write(f)
+		}
+		return buf.Bytes()
+	}
+
+	cases := []struct {
+		name      string
+		rlength   uint16
+		rptdata   []byte
+		budget    int
+		wantText  string // expected single-run text on success
+		wantFails bool
+	}{
+		{"rlength zero emits nothing", 0, nil, 64, "", false},
+		{"rlength equal to data length is transparent", 3, []byte{0xC1, 0xC2, 0xC3}, 64, "ABC", false},
+		{"rlength at the budget passes", 64, []byte{0xC1}, 64, strings.Repeat("A", 64), false},
+		{"rlength one past the budget fails", 65, []byte{0xC1}, 64, "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc, _, err := ReduceWithBudget(bytes.NewReader(build(tc.rlength, tc.rptdata...)), tc.budget)
+			if tc.wantFails {
+				if err == nil {
+					t.Fatalf("ReduceWithBudget accepted RLENGTH=%d under a %d budget", tc.rlength, tc.budget)
+				}
+				var derr afp.DecodeError
+				if !errors.As(err, &derr) {
+					t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+				}
+				if derr.Kind != afp.KindBudget {
+					t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindBudget)
+				}
+				if derr.Reason != budgetExceededReason {
+					t.Errorf("Reason = %q, want %q", derr.Reason, budgetExceededReason)
+				}
+				if derr.FieldID != "D3EE9B" {
+					t.Errorf("FieldID = %q, want D3EE9B (offending PTX)", derr.FieldID)
+				}
+				if want := len(bdt) + len(bpg); derr.Offset != want {
+					t.Errorf("Offset = %d, want %d (offending PTX's start offset)", derr.Offset, want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ReduceWithBudget: %v", err)
+			}
+			if len(doc.Pages) != 1 {
+				t.Fatalf("got %d pages, want 1", len(doc.Pages))
+			}
+			runs := doc.Pages[0].Runs
+			if tc.wantText == "" {
+				if len(runs) != 0 {
+					t.Fatalf("got %d runs, want 0", len(runs))
+				}
+				return
+			}
+			if len(runs) != 1 || runs[0].Text != tc.wantText {
+				t.Fatalf("runs = %+v, want single run %q", runs, tc.wantText)
+			}
+		})
+	}
+}
+
+// TestReduce_BAGEdgeCases: BAG/EAG group edge cases through Reduce. An empty
+// group (BAG immediately followed by EAG) is the legal no-op; a BAG opened
+// inside an open BAG group must fail — BAG nesting is not permitted, so the
+// second BAG is rejected with the illegal-position error. A PTX inside a BAG
+// group reduces normally: groups do not gate content, only pairing.
+func TestReduce_BAGEdgeCases(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	bag := rawField(tBAG, nil)
+	eag := rawField(tEAG, nil)
+	ptx := rawField(tPTX, trn(0xC1))
+	epg := rawField(tEPG, ebcdicSpaces(8))
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+
+	cases := []struct {
+		name       string
+		stream     [][]byte
+		wantRuns   int // runs expected on the single page; -1 means failure
+		wantReason string
+	}{
+		{"empty BAG/EAG group is valid", [][]byte{bdt, bpg, bag, eag, epg, edt}, 0, ""},
+		{"BAG group containing a PTX reduces", [][]byte{bdt, bpg, bag, ptx, eag, epg, edt}, 1, ""},
+		{"BAG nested to depth 2 fails", [][]byte{bdt, bpg, bag, bag, eag, eag, epg, edt}, -1, "BAG in illegal position"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			for _, f := range tc.stream {
+				buf.Write(f)
+			}
+			doc, excls, err := Reduce(&buf)
+			if tc.wantRuns < 0 {
+				if err == nil {
+					t.Fatalf("Reduce accepted %s", tc.name)
+				}
+				var derr afp.DecodeError
+				if !errors.As(err, &derr) {
+					t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+				}
+				if derr.Kind != afp.KindStructure {
+					t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindStructure)
+				}
+				if !strings.Contains(derr.Reason, tc.wantReason) {
+					t.Errorf("Reason = %q, want it to contain %q", derr.Reason, tc.wantReason)
+				}
+				if derr.FieldID != "D3A8C9" {
+					t.Errorf("FieldID = %q, want D3A8C9 (the nested BAG)", derr.FieldID)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Reduce: %v", err)
+			}
+			if len(excls) != 0 {
+				t.Fatalf("got %d exclusions, want 0: %v", len(excls), excls)
+			}
+			if len(doc.Pages) != 1 {
+				t.Fatalf("got %d pages, want 1", len(doc.Pages))
+			}
+			if got := len(doc.Pages[0].Runs); got != tc.wantRuns {
+				t.Fatalf("got %d runs, want %d", got, tc.wantRuns)
+			}
+			if tc.wantRuns == 1 && doc.Pages[0].Runs[0].Text != "A" {
+				t.Errorf("run text = %q, want %q", doc.Pages[0].Runs[0].Text, "A")
+			}
+		})
+	}
+}
