@@ -13,7 +13,10 @@ concurrency:
   # group, so a push to an open PR cancels the in-flight duplicate and
   # exactly one run completes. (github.ref would NOT work: push uses
   # refs/heads/<branch> while pull_request uses refs/pull/<N>/merge.)
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  # The head repository scopes the group so fork PRs reusing a branch name
+  # (commonly main or patch-1) cannot cancel each other's validation; for
+  # push events head.repo is empty and this falls back to this repository.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
