@@ -189,6 +189,48 @@ func TestRender_Untagged(t *testing.T) {
 	}
 }
 
+func TestRender_WinAnsiEncoding(t *testing.T) {
+	doc := line.Document{Pages: []line.Page{{
+		Number: 1, Width: 612, Height: 792,
+		Runs: []line.TextRun{{Text: "café", X: 0, Y: 700, FontSize: 10, FontID: "FIX-MONO-10"}},
+	}}}
+	var buf bytes.Buffer
+	if err := Render(doc, &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	raw := buf.Bytes()
+	// Standard-14 fonts use WinAnsi: é must be the single byte 0xE9,
+	// not the UTF-8 pair 0xC3 0xA9 (which reads as "Ã©").
+	if !bytes.Contains(raw, []byte("(caf\xe9)")) {
+		t.Error(`content stream does not contain WinAnsi-encoded "(caf\xe9)"`)
+	}
+	if bytes.Contains(raw, []byte("\xc3\xa9")) {
+		t.Error("content stream contains raw UTF-8 bytes for é")
+	}
+}
+
+func TestEncodeText_Unmappable(t *testing.T) {
+	// U+1D11E MUSICAL SYMBOL G CLEF has no Windows-1252 mapping.
+	if _, err := encodeText("\U0001D11E"); err == nil {
+		t.Fatal("expected error for unmappable character, got nil")
+	} else if !strings.Contains(err.Error(), "\U0001D11E") {
+		t.Errorf("error should name the offending character, got: %v", err)
+	}
+}
+
+func TestEncodeText_WinAnsiSpecials(t *testing.T) {
+	// 0x80–0x9F are not C1 controls in Windows-1252: spot-check the
+	// Euro sign and smart quotes against their assigned bytes.
+	got, err := encodeText("€\u2019\u201C")
+	if err != nil {
+		t.Fatalf("encodeText: %v", err)
+	}
+	want := "\x80\x92\x93"
+	if got != want {
+		t.Errorf("encodeText(%q) = %q, want %q", "€'\"", got, want)
+	}
+}
+
 func TestRender_UnknownFontID(t *testing.T) {
 	doc := line.Document{Pages: []line.Page{{
 		Number: 1, Width: 612, Height: 792,
