@@ -190,6 +190,8 @@ var (
 	tPTX = [3]byte{0xD3, 0xEE, 0x9B}
 	tBAG = [3]byte{0xD3, 0xA8, 0xC9}
 	tEAG = [3]byte{0xD3, 0xA9, 0xC9}
+	tBPT = [3]byte{0xD3, 0xA8, 0x9B}
+	tEPT = [3]byte{0xD3, 0xA9, 0x9B}
 )
 
 // ebcdicSpaces returns n EBCDIC-037 space (0x40) bytes for CHAR parameters.
@@ -296,5 +298,40 @@ func TestReduce_BAGMustNotCrossEPG(t *testing.T) {
 	}
 	if _, _, err := Reduce(&buf); err == nil {
 		t.Fatalf("Reduce accepted stream with unclosed BAG")
+	}
+}
+
+// TestReduce_BPTMustNotCrossEPG: a BPT object open when EPG arrives must
+// fail at EPG — the BPT/EPG pairing hole mirrors the BAG/EPG hole fixed by
+// TestReduce_BAGMustNotCrossEPG (BDT, BPG, BPT, EPG, EPT, EDT was accepted,
+// breaking the begin/end pairing guarantee).
+func TestReduce_BPTMustNotCrossEPG(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	bpt := rawField(tBPT, nil)
+	ept := rawField(tEPT, nil)
+	epg := rawField(tEPG, ebcdicSpaces(8))
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+
+	// Case 1: BPT object crossing EPG — must fail at EPG.
+	var buf bytes.Buffer
+	for _, f := range [][]byte{bdt, bpg, bpt, epg, ept, edt} {
+		buf.Write(f)
+	}
+	if _, _, err := Reduce(&buf); err == nil {
+		t.Fatalf("Reduce accepted BPT object crossing EPG")
+	} else if !strings.Contains(err.Error(), "EPG") {
+		t.Fatalf("error %q does not name EPG", err)
+	}
+
+	// Case 2: BPT never closed — must fail at EPG.
+	buf.Reset()
+	for _, f := range [][]byte{bdt, bpg, bpt, epg, edt} {
+		buf.Write(f)
+	}
+	if _, _, err := Reduce(&buf); err == nil {
+		t.Fatalf("Reduce accepted stream with unclosed BPT")
+	} else if !strings.Contains(err.Error(), "EPG") {
+		t.Fatalf("error %q does not name EPG", err)
 	}
 }

@@ -124,6 +124,9 @@ func (st *reduceState) visit(f afp.Field) error {
 		if st.bag != 0 {
 			return st.fail(t.TypeID(), "EPG with open BAG group")
 		}
+		if st.bpt != 0 {
+			return st.fail(t.TypeID(), "EPG with open BPT group")
+		}
 		st.pages = append(st.pages, *st.page)
 		st.page = nil
 		return nil
