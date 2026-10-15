@@ -64,8 +64,9 @@ func (st *ptocaState) pos() (x, y float64) {
 }
 
 // budgetExceededReason is the DecodeError Reason when decoded text exceeds
-// the configured budget. The reducer matches on it to attach the offending
-// field's identity and stream offset.
+// the configured budget. The reducer matches budget errors on
+// DecodeError.Kind (afp.KindBudget) to attach the offending field's identity
+// and stream offset.
 const budgetExceededReason = "decoded text budget exceeded"
 
 // text accumulates graphic-character bytes into the pending run. Bytes inside

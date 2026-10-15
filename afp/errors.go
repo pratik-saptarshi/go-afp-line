@@ -37,9 +37,10 @@ const (
 
 	// KindValidation: the input is well-formed but violates the contracted
 	// subset or reducer policy — unknown field type, unknown triplet ID,
-	// unknown PTOCA control sequence, environment field outside a document,
-	// SCFL font ID with no pinned metrics mapping, or a non-RawField /
-	// non-PTX argument to DecodePTOCA.
+	// unknown PTOCA control sequence, SCFL font ID with no pinned metrics
+	// mapping, or a non-RawField / non-PTX argument to DecodePTOCA.
+	// (Placement violations such as an environment field outside a document
+	// are KindStructure: broken document structure.)
 	KindValidation ErrorKind = "validation"
 )
 
@@ -47,7 +48,8 @@ const (
 // FieldID is the hex SFID (e.g. "D3A8A8"); it is empty when the type ID
 // could not be read. Offset is the byte offset in the decoded input where
 // decoding failed. Kind classifies the failure (see ErrorKind). Reason is a
-// human-readable cause; user-influenced text echoed into it is capped by
+// human-readable cause; user-influenced text echoed into it must be wrapped
+// in TruncateEcho.
 // TruncateEcho at MaxEchoRunes runes.
 type DecodeError struct {
 	FieldID string

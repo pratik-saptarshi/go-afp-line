@@ -125,9 +125,9 @@ type reduceState struct {
 }
 
 // fail builds the reducer's DecodeError. The kind classifies the failure;
-// the true cumulative stream offset (st.off, advanced past the field
-// currently being visited before every visit) is attached here so no call
-// site can forget it.
+// the true stream offset (st.off, advanced past all preceding fields, so
+// during a visit it is the current field's start offset) is attached here
+// so no call site can forget it.
 func (st *reduceState) fail(id string, kind afp.ErrorKind, reason string) error {
 	return afp.DecodeError{FieldID: id, Offset: st.off, Kind: kind, Reason: reason}
 }
