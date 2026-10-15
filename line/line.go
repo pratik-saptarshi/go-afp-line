@@ -39,7 +39,7 @@ func (d Document) Validate() error {
 type Page struct {
 	Number int // 1-based page number
 	Width  float64
-	Height float64 // page size in points; both must be positive
+	Height float64 // page size in points; both must be in (0, MaxPageDimension]
 	Runs   []TextRun
 }
 
