@@ -53,6 +53,9 @@ type bboxDoc struct {
 func renderFixtureToPDF(t *testing.T) (line.Document, string) {
 	t.Helper()
 	if _, err := exec.LookPath("pdftotext"); err != nil {
+		if os.Getenv("CI") == "true" {
+			t.Fatal("pdftotext (poppler) not available: independent reader required")
+		}
 		t.Skip("pdftotext (poppler) not available: independent reader required")
 	}
 	f, err := os.Open("../afptoline/fixtures/statement-001.afp")

@@ -18,5 +18,7 @@ jobs:
         run: go mod tidy -diff
       - name: vet
         run: go vet ./...
+      - name: install poppler
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
       - name: test
         run: go test -race ./...
