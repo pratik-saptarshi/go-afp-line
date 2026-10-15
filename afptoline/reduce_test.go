@@ -266,3 +266,35 @@ func TestReduce_BAGInsidePage(t *testing.T) {
 		t.Fatalf("got %d pages, want 1", len(doc.Pages))
 	}
 }
+
+// TestReduce_BAGMustNotCrossEPG: a BAG group open when EPG arrives must
+// fail at EPG — Codex P2 on PR #1 (BDT, BPG, BAG, EPG, EAG, EDT was
+// accepted, breaking the begin/end pairing guarantee).
+func TestReduce_BAGMustNotCrossEPG(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	bag := rawField(tBAG, nil)
+	eag := rawField(tEAG, nil)
+	epg := rawField(tEPG, ebcdicSpaces(8))
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+
+	// Case 1: BAG group crossing EPG — must fail at EPG.
+	var buf bytes.Buffer
+	for _, f := range [][]byte{bdt, bpg, bag, epg, eag, edt} {
+		buf.Write(f)
+	}
+	if _, _, err := Reduce(&buf); err == nil {
+		t.Fatalf("Reduce accepted BAG group crossing EPG")
+	} else if !strings.Contains(err.Error(), "EPG") {
+		t.Fatalf("error %q does not name EPG", err)
+	}
+
+	// Case 2: BAG never closed — must fail at EPG.
+	buf.Reset()
+	for _, f := range [][]byte{bdt, bpg, bag, epg, edt} {
+		buf.Write(f)
+	}
+	if _, _, err := Reduce(&buf); err == nil {
+		t.Fatalf("Reduce accepted stream with unclosed BAG")
+	}
+}
