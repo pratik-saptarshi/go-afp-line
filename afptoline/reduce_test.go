@@ -80,11 +80,14 @@ func TestReduce_Statement(t *testing.T) {
 	}
 	checkRuns(t, 1, doc.Pages[0].Runs, []wantRun{
 		{"STATEMENT LINE ONE", 0, 756, "FIX-MONO-10", 10},
-		{"STATEMENT LINE TWO", 0, 720, "FIX-MONO-10", 10},
+		// AMB moves the baseline only; the second line starts at the
+		// advanced inline position: 18 chars * 6pt = 108pt.
+		{"STATEMENT LINE TWO", 108, 720, "FIX-MONO-10", 10},
 	})
 	checkRuns(t, 2, doc.Pages[1].Runs, []wantRun{
 		{"STATEMENT LINE THREE", 0, 756, "FIX-MONO-10", 10},
-		{"STATEMENT LINE FOUR", 0, 720, "FIX-MONO-10", 10},
+		// 20 chars * 6pt = 120pt advanced past the first line.
+		{"STATEMENT LINE FOUR", 120, 720, "FIX-MONO-10", 10},
 	})
 	if err := doc.Validate(); err != nil {
 		t.Errorf("doc.Validate: %v", err)
@@ -977,7 +980,7 @@ func TestReduce_ReducerFailSites(t *testing.T) {
 		{"EPT without BPT", [][]byte{bdt, ept}, afp.KindStructure, "EPT without BPT", "D3A99B"},
 		{"MCF outside document", [][]byte{mcf}, afp.KindStructure, "environment field outside document", "D3AB8A"},
 		{"PTD outside document", [][]byte{ptd}, afp.KindStructure, "environment field outside document", "D3B19B"},
-		{"SCFL nonzero LID", [][]byte{bdt, bpg, ptxSCFL, epg, edt}, afp.KindValidation, "SCFL local font ID 5", ""},
+		{"SCFL nonzero LID", [][]byte{bdt, bpg, ptxSCFL, epg, edt}, afp.KindValidation, "SCFL local font ID 5", "D3EE9B"},
 		{"PTX decoder error passes through", [][]byte{bdt, bpg, ptxTrunc, epg, edt}, afp.KindStructure, "control sequence extends past PTX data", "D3EE9B"},
 		{"finish with open page", [][]byte{bdt, bpg}, afp.KindStructure, "end of stream with open page: missing EPG", ""},
 		{"finish with unclosed group", [][]byte{bdt, bng}, afp.KindStructure, "end of stream with unclosed group", ""},

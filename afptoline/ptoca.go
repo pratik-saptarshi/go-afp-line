@@ -3,6 +3,8 @@ package afptoline
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
+	"unicode/utf8"
 
 	"github.com/pratik-saptarshi/go-afp-line/afp"
 )
@@ -12,6 +14,13 @@ import (
 // definitions); 1440/72 = 20 L-units per point. A PTD-declared unit would
 // override this; v1 assumes the reference default. See docs/subset-contract.md §7.
 const lUnitsPerPoint = 20.0
+
+// advanceFunc returns the inline advance width in points for text set in
+// the given SCFL local font ID. It is unexported: only the reducer supplies
+// one (wired to the pinned font registry), keeping the decoder
+// font-agnostic. A returned width must be finite and non-negative; flush()
+// rejects anything else loudly.
+type advanceFunc func(fontLID byte, text string) (float64, error)
 
 // Run is a decoded PTOCA text run: decoded text with its presentation position
 // in points, in PTOCA object space (X rightward from the inline origin, Y
@@ -33,7 +42,7 @@ type ptocaState struct {
 	ic, bc   float64 // current presentation position, L-units
 	imargin  float64 // SIM inline margin, L-units
 	incr     float64 // SBI baseline increment, L-units
-	sia      int16   // SIA intercharacter adjustment (tracked; applied by Task 8 with metrics)
+	sia      int16   // SIA intercharacter adjustment, L-units; folded into flush() advancement
 	svi      uint16  // SVI variable-space character increment (tracked)
 	fontID   byte    // SCFL local font identifier
 	color    []byte  // STC raw color specification (tracked)
@@ -43,6 +52,11 @@ type ptocaState struct {
 
 	cp  afp.CodePage
 	cur []byte // pending text bytes for the run being accumulated
+	// adv, when non-nil, supplies the inline advance width in points for
+	// emitted text; flush() advances st.ic by it (plus SIA). Nil disables
+	// advancement (DecodePTOCA's legacy behavior). Unexported: only the
+	// reducer supplies one, so the decoder stays font-agnostic.
+	adv advanceFunc
 	// remaining caps additional text() bytes; negative means unlimited.
 	// It is the fail-fast security boundary against amplification (RPS):
 	// the budget is checked before any segment is appended or any repeat
@@ -87,18 +101,47 @@ func (st *ptocaState) text(b []byte) error {
 
 // flush ends the pending run, keeping the start position recorded by
 // markStart. Moves, font changes, and suppression boundaries flush so each
-// run has exactly one position and font.
-func (st *ptocaState) flush() {
+// run has exactly one position and font. When st.adv is non-nil, flush also
+// advances the inline position past the emitted text: the width comes from
+// st.adv (points, converted to L-units) plus the SIA intercharacter
+// adjustment per intercharacter gap. Absolute moves after a flush override
+// the advanced position; that is the PTOCA-correct behavior.
+func (st *ptocaState) flush() error {
 	if len(st.cur) == 0 {
-		return
+		return nil
 	}
+	text := st.cp.Decode(st.cur)
 	st.runs = append(st.runs, Run{
-		Text:   st.cp.Decode(st.cur),
+		Text:   text,
 		X:      st.curX,
 		Y:      st.curY,
 		FontID: st.curFont,
 	})
 	st.cur = nil
+	if st.adv == nil {
+		return nil
+	}
+	w, err := st.adv(st.curFont, text)
+	if err != nil {
+		return err
+	}
+	if math.IsNaN(w) || math.IsInf(w, 0) || w < 0 {
+		return afp.DecodeError{
+			Kind:   afp.KindValidation,
+			Reason: fmt.Sprintf("advance width %v out of domain (want finite, non-negative)", w),
+		}
+	}
+	// SIA applies per intercharacter gap: N runes → N-1 gaps, none for a
+	// single character. sia is int16 L-units, signed; negative tightens.
+	// v1 limitation: gaps adjacent to spaces count too. Per the PTOCA
+	// reference, SIA inserts only between characters forming a word, not
+	// between words — a run like "hello world" over-advances by 2×sia per
+	// space. Impact is nil at sia=0 (the initialized value); inword gating
+	// is future work. A mid-run SIA change likewise applies the final value
+	// to all gaps of the merged run (SIA does not split runs).
+	gaps := max(utf8.RuneCountInString(text)-1, 0)
+	st.ic += w*lUnitsPerPoint + float64(st.sia)*float64(gaps)
+	return nil
 }
 
 // curX, curY, curFont record where the pending run started.
@@ -116,18 +159,20 @@ func (st *ptocaState) markStart() {
 // text bytes. Unknown control sequences, truncated sequences, and unmatched
 // ESU fail loudly with afp.DecodeError; nothing is silently skipped.
 //
-// v1 limitations (deliberate): inline position is not advanced per character
-// (that needs font metrics, applied by Task 8); DIR/DBR rules and STC color
-// are parsed but not emitted as runs.
+// v1 limitations (deliberate): SVI variable-space increments are tracked but
+// not applied to advancement (see flush); DIR/DBR rules and STC color are
+// parsed but not emitted as runs.
 func DecodePTOCA(f afp.Field, cp afp.CodePage) ([]Run, error) {
-	return decodePTOCA(f, cp, -1)
+	return decodePTOCA(f, cp, -1, nil)
 }
 
-// decodePTOCA is DecodePTOCA with an explicit cap on decoded text bytes.
-// maxBytes < 0 means unlimited; otherwise the fail-fast budget in
-// ptocaState.remaining aborts the decode before any segment or repeat buffer
-// can exceed it.
-func decodePTOCA(f afp.Field, cp afp.CodePage, maxBytes int) ([]Run, error) {
+// decodePTOCA is DecodePTOCA with an explicit cap on decoded text bytes and
+// an optional inline-advance function. maxBytes < 0 means unlimited;
+// otherwise the fail-fast budget in ptocaState.remaining aborts the decode
+// before any segment or repeat buffer can exceed it. adv == nil disables
+// advancement (DecodePTOCA's behavior); the reducer passes a metrics-backed
+// closure so runs after text start at the advanced inline position.
+func decodePTOCA(f afp.Field, cp afp.CodePage, maxBytes int, adv advanceFunc) ([]Run, error) {
 	rf, ok := f.(*afp.RawField)
 	if !ok {
 		return nil, afp.DecodeError{Kind: afp.KindValidation, Reason: fmt.Sprintf("DecodePTOCA needs *afp.RawField, got %T", f)}
@@ -135,7 +180,7 @@ func decodePTOCA(f afp.Field, cp afp.CodePage, maxBytes int) ([]Run, error) {
 	if id := rf.Intro.TypeIDString(); id != "D3EE9B" {
 		return nil, afp.DecodeError{FieldID: id, Kind: afp.KindValidation, Reason: "DecodePTOCA needs a PTX field (D3EE9B)"}
 	}
-	st := &ptocaState{cp: cp, remaining: maxBytes}
+	st := &ptocaState{cp: cp, remaining: maxBytes, adv: adv}
 	data := rf.Data
 	pos := 0
 	for pos < len(data) {
@@ -171,7 +216,9 @@ func decodePTOCA(f afp.Field, cp afp.CodePage, maxBytes int) ([]Run, error) {
 		}
 		pos = end
 	}
-	st.flush()
+	if err := st.flush(); err != nil {
+		return nil, err
+	}
 	return st.runs, nil
 }
 
@@ -271,7 +318,9 @@ func doMove(apply func(st *ptocaState, v int16)) handler {
 		if len(params) != 2 {
 			return seqLenError(offset, 2, len(params))
 		}
-		st.flush()
+		if err := st.flush(); err != nil {
+			return err
+		}
 		apply(st, int16(binary.BigEndian.Uint16(params)))
 		return nil
 	}
@@ -321,7 +370,9 @@ func doBSU(st *ptocaState, params []byte, offset int) error {
 	if len(params) != 1 {
 		return seqLenError(offset, 1, len(params))
 	}
-	st.flush()
+	if err := st.flush(); err != nil {
+		return err
+	}
 	st.suppress = append(st.suppress, params[0])
 	return nil
 }
@@ -352,7 +403,9 @@ func doSCFL(st *ptocaState, params []byte, offset int) error {
 	if len(params) != 1 {
 		return seqLenError(offset, 1, len(params))
 	}
-	st.flush()
+	if err := st.flush(); err != nil {
+		return err
+	}
 	st.fontID = params[0]
 	return nil
 }
@@ -377,8 +430,8 @@ func doTRN(st *ptocaState, params []byte, _ int) error {
 // doRPS processes Repeat String: RLENGTH(2B) then RPTDATA bytes. The RPTDATA
 // bytes are repeated until RLENGTH bytes of graphic characters are presented;
 // when RLENGTH equals the RPTDATA length this is identical to Transparent
-// Data (per the PTOCA reference). Inline advances per character in a real
-// renderer; v1 records the run start only — see package notes.
+// Data (per the PTOCA reference). Inline advances past the repeated text on
+// flush, like any other run.
 func doRPS(st *ptocaState, params []byte, offset int) error {
 	if len(params) < 2 {
 		return seqLenError(offset, 2, len(params))
@@ -438,7 +491,9 @@ func doBLN(st *ptocaState, params []byte, offset int) error {
 	if len(params) != 0 {
 		return seqLenError(offset, 0, len(params))
 	}
-	st.flush()
+	if err := st.flush(); err != nil {
+		return err
+	}
 	st.ic = st.imargin
 	st.bc += st.incr
 	return nil

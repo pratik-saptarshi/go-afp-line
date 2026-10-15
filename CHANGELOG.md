@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Dependabot coverage for Go modules and GitHub Actions (weekly).
 - `govulncheck` vulnerability scanning in CI.
 
+### Changed
+- PTOCA inline position now advances past emitted text on the `Reduce` path, using pinned font metrics plus the SIA intercharacter adjustment. Runs after text in one PTX start at the advanced position; absolute moves (AMI) and new lines (BLN) still override it. `DecodePTOCA` is unchanged (no advancement).
+
 ## [Round 2 Phase C] - 2026-10-15
 
 Fourth batch of adversarial panel findings (PRs #4–#7).

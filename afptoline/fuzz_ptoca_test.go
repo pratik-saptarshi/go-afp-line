@@ -82,7 +82,7 @@ func FuzzDecodePTOCA(f *testing.F) {
 	f.Add([]byte{0xD3})                                           // chained-class byte without introducer
 
 	f.Fuzz(func(t *testing.T, b []byte) {
-		runs, err := decodePTOCA(ptxField(b), cp, fuzzBudget)
+		runs, err := decodePTOCA(ptxField(b), cp, fuzzBudget, nil)
 		if err != nil {
 			var derr afp.DecodeError
 			if !errors.As(err, &derr) {
