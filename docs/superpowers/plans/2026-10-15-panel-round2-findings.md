@@ -343,6 +343,6 @@ P1 items from the verdict are now Phase C tasks above; what remains below is def
 - **`govulncheck`, Dependabot, `SECURITY.md`, changelog, fuller `.gitignore` (R2P2-F04):** defer — operational workstream, separate from code correctness.
 - **Benchmarks (R2P2-F05):** defer — no performance requirement exists yet; add when optimizing.
 - **Codex PR #3 P2 — rebase non-budget PTOCA decoder offsets to stream offsets (CODEX-F01):** defer — diagnostic-only (fail-loud, correct FieldID); the proper fix threads stream offsets into the decoder error path (introducer length + 5A framing), a contract change across all malformed-input errors. Schedule alongside future decoder error-path work.
-- **ARCH-6 — no context support (R2P1-F06):** defer — flagged during review: adding `context.Context` is a breaking API change across the decode paths with no agreed shape; needs a scoping decision before it can be planned.
+- **ARCH-6 — no context support (R2P1-F06):** dropped per ADR 0001 (docs/decisions/0001-drop-context-support.md): no caller scenario justifies the breaking API change; resource exhaustion is covered by the RPS text budget and the C13 streaming iterator, and a context cannot unstick a hung `Read`.
 
 The verdict's `## Overruled or downgraded` items (ARCH2-3 refuted, TEST2-1 downgraded, CQ2-3 low, Go 1.27 directive and hardwired Courier left alone) required no plan action and are recorded here for completeness.
