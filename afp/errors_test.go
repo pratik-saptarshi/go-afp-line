@@ -29,12 +29,12 @@ func TestErrorKind_DocumentedValues(t *testing.T) {
 // Kind matching its failure class.
 func TestDecodeError_KindsOnRepresentativeErrors(t *testing.T) {
 	// structure: a truncated introducer is malformed wire data.
-	if _, err := DecodeIntroducer([]byte{0x00}); err == nil {
-		t.Fatal("DecodeIntroducer(truncated): got nil error")
+	if _, err := decodeIntroducer([]byte{0x00}); err == nil {
+		t.Fatal("decodeIntroducer(truncated): got nil error")
 	} else {
 		derr, ok := err.(DecodeError)
 		if !ok {
-			t.Fatalf("DecodeIntroducer(truncated): error = %T, want DecodeError", err)
+			t.Fatalf("decodeIntroducer(truncated): error = %T, want DecodeError", err)
 		}
 		if derr.Kind != KindStructure {
 			t.Errorf("truncated introducer: Kind = %q, want %q", derr.Kind, KindStructure)
@@ -92,34 +92,34 @@ func TestDecodeError_ErrorWithoutKind(t *testing.T) {
 }
 
 // TestTruncateEcho: user-influenced text echoed into error reasons is capped
-// at MaxEchoRunes runes so a hostile stream cannot bloat error strings.
+// at maxEchoRunes runes so a hostile stream cannot bloat error strings.
 func TestTruncateEcho(t *testing.T) {
-	if MaxEchoRunes != 80 {
-		t.Errorf("MaxEchoRunes = %d, want 80 (the documented echo cap)", MaxEchoRunes)
+	if maxEchoRunes != 80 {
+		t.Errorf("maxEchoRunes = %d, want 80 (the documented echo cap)", maxEchoRunes)
 	}
 	short := "medium map name"
-	if got := TruncateEcho(short); got != short {
-		t.Errorf("TruncateEcho(%q) = %q, want unchanged", short, got)
+	if got := truncateEcho(short); got != short {
+		t.Errorf("truncateEcho(%q) = %q, want unchanged", short, got)
 	}
 	exact := strings.Repeat("a", 80)
-	if got := TruncateEcho(exact); got != exact {
-		t.Errorf("TruncateEcho(80 runes) changed the input: %q", got)
+	if got := truncateEcho(exact); got != exact {
+		t.Errorf("truncateEcho(80 runes) changed the input: %q", got)
 	}
 	long := strings.Repeat("b", 200)
-	got := TruncateEcho(long)
+	got := truncateEcho(long)
 	if n := utf8.RuneCountInString(got); n != 81 { // 80 kept + ellipsis
-		t.Errorf("TruncateEcho(200 runes) = %d runes, want 81 (80 + ellipsis)", n)
+		t.Errorf("truncateEcho(200 runes) = %d runes, want 81 (80 + ellipsis)", n)
 	}
 	if !strings.HasPrefix(got, strings.Repeat("b", 80)) {
-		t.Errorf("TruncateEcho(200 runes) does not keep the first 80 runes: %q", got)
+		t.Errorf("truncateEcho(200 runes) does not keep the first 80 runes: %q", got)
 	}
 	// Rune-boundary safety: 100 two-byte runes must not be split mid-rune.
 	wide := strings.Repeat("é", 100)
-	got = TruncateEcho(wide)
+	got = truncateEcho(wide)
 	if !utf8.ValidString(got) {
-		t.Errorf("TruncateEcho split a multi-byte rune: %q", got)
+		t.Errorf("truncateEcho split a multi-byte rune: %q", got)
 	}
 	if n := utf8.RuneCountInString(got); n != 81 {
-		t.Errorf("TruncateEcho(100 wide runes) = %d runes, want 81", n)
+		t.Errorf("truncateEcho(100 wide runes) = %d runes, want 81", n)
 	}
 }

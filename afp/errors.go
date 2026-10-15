@@ -49,8 +49,8 @@ const (
 // could not be read. Offset is the byte offset in the decoded input where
 // decoding failed. Kind classifies the failure (see ErrorKind). Reason is a
 // human-readable cause; user-influenced text echoed into it must be wrapped
-// in TruncateEcho.
-// TruncateEcho at MaxEchoRunes runes.
+// in truncateEcho.
+// truncateEcho at maxEchoRunes runes.
 type DecodeError struct {
 	FieldID string
 	Offset  int
@@ -72,16 +72,16 @@ func (e DecodeError) Error() string {
 	return sb.String()
 }
 
-// MaxEchoRunes caps user-influenced text echoed into a DecodeError Reason.
-const MaxEchoRunes = 80
+// maxEchoRunes caps user-influenced text echoed into a DecodeError Reason.
+const maxEchoRunes = 80
 
-// TruncateEcho caps user-influenced text echoed into error reasons at
-// MaxEchoRunes runes, appending "…" when truncated. It prevents a hostile
+// truncateEcho caps user-influenced text echoed into error reasons at
+// maxEchoRunes runes, appending "…" when truncated. It prevents a hostile
 // stream from bloating error strings with megabytes of echoed payload.
 // Cutting on rune boundaries keeps the result valid UTF-8.
-func TruncateEcho(s string) string {
-	if utf8.RuneCountInString(s) <= MaxEchoRunes {
+func truncateEcho(s string) string {
+	if utf8.RuneCountInString(s) <= maxEchoRunes {
 		return s
 	}
-	return string([]rune(s)[:MaxEchoRunes]) + "…"
+	return string([]rune(s)[:maxEchoRunes]) + "…"
 }

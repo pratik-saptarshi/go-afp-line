@@ -2,3 +2,34 @@
 # The distilled notes (*.md, extracted .txt) are committed.
 docs/_evidence/afp-research/
 docs/_evidence/modca/
+
+# Binaries and build output
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.out
+/bin/
+/dist/
+
+# Test and coverage artifacts
+*.test
+*.prof
+coverage.out
+coverage.html
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Go workspace files
+go.work
+go.work.sum

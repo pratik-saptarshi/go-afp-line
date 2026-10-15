@@ -181,7 +181,7 @@ func (st *reduceState) visit(f afp.Field) error {
 		if st.page != nil {
 			return st.fail(t.TypeID(), afp.KindStructure, "nested BPG: page already open")
 		}
-		w, h := ResolvePageGeometry()
+		w, h := resolvePageGeometry()
 		st.page = &line.Page{Number: len(st.pages) + 1, Width: w, Height: h}
 		return nil
 	case *afp.EPG:
@@ -306,7 +306,7 @@ func (st *reduceState) visitPTX(t *afp.RawField) error {
 		st.page.Runs = append(st.page.Runs, line.TextRun{
 			Text:     run.Text,
 			X:        run.X,
-			Y:        FlipY(run.Y, st.page.Height),
+			Y:        flipY(run.Y, st.page.Height),
 			FontSize: defaultFontSize,
 			FontID:   fontID,
 		})
