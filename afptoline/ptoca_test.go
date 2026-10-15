@@ -170,6 +170,15 @@ func TestDecodePTOCA_ESU_Unmatched(t *testing.T) {
 	if !errors.As(err, &derr) {
 		t.Fatalf("error type = %T, want afp.DecodeError", err)
 	}
+	if derr.Kind != afp.KindStructure {
+		t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindStructure)
+	}
+	if derr.FieldID != "D3EE9B" {
+		t.Errorf("FieldID = %q, want D3EE9B", derr.FieldID)
+	}
+	if !strings.Contains(derr.Reason, "ESU with no matching BSU (LID 0x02)") {
+		t.Errorf("Reason = %q, want ESU/LID naming", derr.Reason)
+	}
 }
 
 func TestDecodePTOCA_UnknownSequence(t *testing.T) {
@@ -331,15 +340,34 @@ func TestDecodePTOCA_STC_STO_NOP_SVI(t *testing.T) {
 }
 
 func TestDecodePTOCA_Truncated(t *testing.T) {
-	for name, p := range map[string][]byte{
-		"cut sequence":   {0x2B, 0xD3, 0x05, 0xD2, 0x05},
-		"lone escape":    {0x2B, 0xD3},
-		"cut chained":    {0x2B, 0xD3, 0x03, 0xD3, 0x05},
-		"length overrun": {0x2B, 0xD3, 0xFF, 0xD2, 0x00},
-	} {
-		if _, err := DecodePTOCA(ptxField(p), testCP(t)); err == nil {
-			t.Errorf("%s: expected error, got nil", name)
-		}
+	cases := []struct {
+		name       string
+		payload    []byte
+		wantKind   afp.ErrorKind
+		wantReason string
+	}{
+		{"cut sequence", []byte{0x2B, 0xD3, 0x05, 0xD2, 0x05}, afp.KindStructure, "control sequence extends past PTX data"},
+		{"lone escape", []byte{0x2B, 0xD3}, afp.KindStructure, "truncated control sequence introducer"},
+		{"cut chained", []byte{0x2B, 0xD3, 0x03, 0xD3, 0x05}, afp.KindStructure, "control sequence wants 2 param bytes, got 1"},
+		{"length overrun", []byte{0x2B, 0xD3, 0xFF, 0xD2, 0x00}, afp.KindStructure, "control sequence extends past PTX data"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := DecodePTOCA(ptxField(tc.payload), testCP(t))
+			if err == nil {
+				t.Fatalf("%s: expected error, got nil", tc.name)
+			}
+			var derr afp.DecodeError
+			if !errors.As(err, &derr) {
+				t.Fatalf("%s: error type = %T, want afp.DecodeError", tc.name, err)
+			}
+			if derr.Kind != tc.wantKind {
+				t.Errorf("%s: Kind = %q, want %q", tc.name, derr.Kind, tc.wantKind)
+			}
+			if derr.Reason != tc.wantReason {
+				t.Errorf("%s: Reason = %q, want %q", tc.name, derr.Reason, tc.wantReason)
+			}
+		})
 	}
 }
 
@@ -348,11 +376,38 @@ func TestDecodePTOCA_NonPTX(t *testing.T) {
 		Intro: afp.Introducer{Length: 16, TypeID: [3]byte{0xD3, 0xA8, 0xA8}},
 		Data:  make([]byte, 8),
 	}
-	if _, err := DecodePTOCA(bdt, testCP(t)); err == nil {
+	_, err := DecodePTOCA(bdt, testCP(t))
+	if err == nil {
 		t.Error("expected error for non-PTX field, got nil")
+	} else {
+		var derr afp.DecodeError
+		if !errors.As(err, &derr) {
+			t.Fatalf("error type = %T, want afp.DecodeError", err)
+		}
+		if derr.Kind != afp.KindValidation {
+			t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindValidation)
+		}
+		if derr.FieldID != "D3A8A8" {
+			t.Errorf("FieldID = %q, want D3A8A8", derr.FieldID)
+		}
+		if derr.Reason != "DecodePTOCA needs a PTX field (D3EE9B)" {
+			t.Errorf("Reason = %q", derr.Reason)
+		}
 	}
-	if _, err := DecodePTOCA(&afp.BDT{}, testCP(t)); err == nil {
+	_, err = DecodePTOCA(&afp.BDT{}, testCP(t))
+	if err == nil {
 		t.Error("expected error for non-RawField, got nil")
+	} else {
+		var derr afp.DecodeError
+		if !errors.As(err, &derr) {
+			t.Fatalf("error type = %T, want afp.DecodeError", err)
+		}
+		if derr.Kind != afp.KindValidation {
+			t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindValidation)
+		}
+		if !strings.Contains(derr.Reason, "DecodePTOCA needs *afp.RawField") {
+			t.Errorf("Reason = %q", derr.Reason)
+		}
 	}
 }
 
@@ -397,6 +452,9 @@ func TestPtocaStateText_BudgetExceeded(t *testing.T) {
 	var derr afp.DecodeError
 	if !errors.As(err, &derr) || derr.Reason != budgetExceededReason {
 		t.Fatalf("error = %v (%T), want afp.DecodeError with budget reason", err, err)
+	}
+	if derr.Kind != afp.KindBudget {
+		t.Fatalf("Kind = %q, want %q", derr.Kind, afp.KindBudget)
 	}
 	if len(st.cur) != 0 {
 		t.Fatalf("st.cur grew to %d bytes despite the budget error", len(st.cur))
@@ -450,6 +508,9 @@ func TestDoRPS_BudgetPrecheck(t *testing.T) {
 	if !errors.As(err, &derr) || derr.Reason != budgetExceededReason {
 		t.Fatalf("error = %v (%T), want afp.DecodeError with budget reason", err, err)
 	}
+	if derr.Kind != afp.KindBudget {
+		t.Fatalf("Kind = %q, want %q", derr.Kind, afp.KindBudget)
+	}
 	if len(st.cur) > 4096 {
 		t.Fatalf("st.cur grew to %d bytes: the repeat buffer was allocated before the budget check", len(st.cur))
 	}
@@ -467,7 +528,6 @@ func TestDoRPS_BudgetPrecheck(t *testing.T) {
 //   - non-RawField / non-PTX field: TestDecodePTOCA_NonPTX
 //   - truncated unchained introducer and length overrun: TestDecodePTOCA_Truncated
 //   - unmatched ESU: TestDecodePTOCA_ESU_Unmatched
-//   - RPS empty RPTDATA: TestDecodePTOCA_RPS_EmptyDataErrors
 //   - RPS/text fail-fast budget: TestDoRPS_BudgetPrecheck, TestPtocaStateText_BudgetExceeded
 func TestDecodePTOCA_ErrorPaths(t *testing.T) {
 	chained := func(tail ...byte) []byte {

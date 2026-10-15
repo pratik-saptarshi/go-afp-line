@@ -211,21 +211,25 @@ func TestReduce_PairingErrors(t *testing.T) {
 	epg := rawField(tEPG, ebcdicSpaces(8))
 	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
 	ptx := rawField(tPTX, nil)
-	bag := rawField(tBAG, nil)
+	tBNG := [3]byte{0xD3, 0xA8, 0xAD}
+	bng := rawField(tBNG, ebcdicSpaces(8))
 
 	cases := []struct {
-		name   string
-		stream [][]byte
+		name        string
+		stream      [][]byte
+		wantKind    afp.ErrorKind
+		wantReason  string
+		wantFieldID string
 	}{
-		{"nested BDT", [][]byte{bdt, bdt}},
-		{"EDT without BDT", [][]byte{edt}},
-		{"BPG before BDT", [][]byte{bpg}},
-		{"EPG without BPG", [][]byte{bdt, epg}},
-		{"nested BPG", [][]byte{bdt, bpg, bpg}},
-		{"PTX outside page", [][]byte{bdt, ptx}},
-		{"EDT with open page", [][]byte{bdt, bpg, edt}},
-		{"unclosed document", [][]byte{bdt, bpg, epg}},
-		{"unclosed BAG", [][]byte{bdt, bag, edt}},
+		{"nested BDT", [][]byte{bdt, bdt}, afp.KindStructure, "nested BDT: document already open", "D3A8A8"},
+		{"EDT without BDT", [][]byte{edt}, afp.KindStructure, "EDT without BDT", "D3A9A8"},
+		{"BPG before BDT", [][]byte{bpg}, afp.KindStructure, "BPG outside document", "D3A8AF"},
+		{"EPG without BPG", [][]byte{bdt, epg}, afp.KindStructure, "EPG without BPG", "D3A9AF"},
+		{"nested BPG", [][]byte{bdt, bpg, bpg}, afp.KindStructure, "nested BPG: page already open", "D3A8AF"},
+		{"PTX outside page", [][]byte{bdt, ptx}, afp.KindStructure, "PTX outside page", "D3EE9B"},
+		{"EDT with open page", [][]byte{bdt, bpg, edt}, afp.KindStructure, "EDT with open page: missing EPG", "D3A9A8"},
+		{"unclosed document", [][]byte{bdt, bpg, epg}, afp.KindStructure, "end of stream with open document: missing EDT", ""},
+		{"unclosed BNG", [][]byte{bdt, bng, edt}, afp.KindStructure, "EDT with unclosed group", "D3A9A8"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -240,6 +244,15 @@ func TestReduce_PairingErrors(t *testing.T) {
 			var derr afp.DecodeError
 			if !errors.As(err, &derr) {
 				t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+			}
+			if derr.Kind != c.wantKind {
+				t.Errorf("Kind = %q, want %q", derr.Kind, c.wantKind)
+			}
+			if !strings.Contains(derr.Reason, c.wantReason) {
+				t.Errorf("Reason %q does not contain %q", derr.Reason, c.wantReason)
+			}
+			if derr.FieldID != c.wantFieldID {
+				t.Errorf("FieldID = %q, want %q", derr.FieldID, c.wantFieldID)
 			}
 		})
 	}
@@ -889,8 +902,8 @@ func TestReduce_Corrupt5AMarker(t *testing.T) {
 //     decoder's fail-fast aborts on the same bytes first; kept as
 //     defense-in-depth, documented in reduce.go.
 //   - DecodeField length-mismatch check: unreachable via Reduce —
-//     SplitFields always emits exactly the declared field bytes; covered for
-//     direct callers in the afp package.
+//     SplitFields always emits exactly the declared field bytes, so no
+//     Reduce-level test can reach it.
 func TestReduce_ReducerFailSites(t *testing.T) {
 	tBNG := [3]byte{0xD3, 0xA8, 0xAD}
 	tENG := [3]byte{0xD3, 0xA9, 0xAD}
