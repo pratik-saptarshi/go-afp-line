@@ -99,7 +99,7 @@ func pageNameData(name string) []byte {
 	return b
 }
 
-// Unchained PTOCA control sequences — docs/_evidence/ptoca-reference-extract.txt
+// Unchained PTOCA control sequences — see docs/subset-contract.md
 // ("Absolute Move Baseline (AMB)", unchained X'D2', chained X'D3'):
 // 2B (control-sequence prefix) | D3 (class) | 04 (length: itself + type +
 // 2 displacement bytes) | D2 (unchained AMB) | displacement (2B BE, L-units).
