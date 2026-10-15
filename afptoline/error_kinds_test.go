@@ -43,8 +43,8 @@ func TestReduce_StructureErrorCarriesOffsetAndKind(t *testing.T) {
 	if derr.Kind != afp.KindStructure {
 		t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindStructure)
 	}
-	if want := len(bdt1) + len(bdt2); derr.Offset != want {
-		t.Errorf("Offset = %d, want %d (cumulative offset through the offending BDT)", derr.Offset, want)
+	if want := len(bdt1); derr.Offset != want {
+		t.Errorf("Offset = %d, want %d (field-start offset of the offending BDT)", derr.Offset, want)
 	}
 	if derr.FieldID != "D3A8A8" {
 		t.Errorf("FieldID = %q, want D3A8A8", derr.FieldID)
@@ -78,8 +78,8 @@ func TestReduce_BudgetErrorCarriesKind(t *testing.T) {
 	if derr.Kind != afp.KindBudget {
 		t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindBudget)
 	}
-	if want := len(bdt) + len(bpg) + len(ptx); derr.Offset != want {
-		t.Errorf("Offset = %d, want %d (cumulative offset through the offending PTX)", derr.Offset, want)
+	if want := len(bdt) + len(bpg); derr.Offset != want {
+		t.Errorf("Offset = %d, want %d (field-start offset of the offending PTX)", derr.Offset, want)
 	}
 }
 
@@ -96,8 +96,8 @@ func TestReduce_EncodingErrorCarriesKind(t *testing.T) {
 	if derr.Kind != afp.KindEncoding {
 		t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindEncoding)
 	}
-	if want := len(bdt) + len(bpg) + len(ptx); derr.Offset != want {
-		t.Errorf("Offset = %d, want %d (cumulative offset through the offending PTX)", derr.Offset, want)
+	if want := len(bdt) + len(bpg); derr.Offset != want {
+		t.Errorf("Offset = %d, want %d (field-start offset of the offending PTX)", derr.Offset, want)
 	}
 }
 
@@ -117,8 +117,8 @@ func TestReduce_ValidationErrorCarriesKind(t *testing.T) {
 	if !strings.Contains(derr.Reason, "SCFL") {
 		t.Errorf("Reason = %q, want it to name SCFL", derr.Reason)
 	}
-	if want := len(bdt) + len(bpg) + len(ptx); derr.Offset != want {
-		t.Errorf("Offset = %d, want %d (cumulative offset through the offending PTX)", derr.Offset, want)
+	if want := len(bdt) + len(bpg); derr.Offset != want {
+		t.Errorf("Offset = %d, want %d (field-start offset of the offending PTX)", derr.Offset, want)
 	}
 }
 
@@ -135,14 +135,15 @@ func TestReduce_FailSitesCarryTrueOffsets(t *testing.T) {
 	cases := []struct {
 		name   string
 		fields [][]byte
+		want   int // field-start offset of the offending field (0 is legitimate)
 	}{
-		{"EDT without BDT", [][]byte{edt}},
-		{"BPG outside document", [][]byte{bpg}},
-		{"EPG without BPG", [][]byte{bdt, epg}},
-		{"BNG in illegal position", [][]byte{bng}},
-		{"ENG without BNG", [][]byte{bdt, eng}},
-		{"end of stream with open document", [][]byte{bdt}},
-		{"end of stream with open page", [][]byte{bdt, bpg}},
+		{"EDT without BDT", [][]byte{edt}, 0},
+		{"BPG outside document", [][]byte{bpg}, 0},
+		{"EPG without BPG", [][]byte{bdt, epg}, len(bdt)},
+		{"BNG in illegal position", [][]byte{bng}, 0},
+		{"ENG without BNG", [][]byte{bdt, eng}, len(bdt)},
+		{"end of stream with open document", [][]byte{bdt}, len(bdt)},
+		{"end of stream with open page", [][]byte{bdt, bpg}, len(bdt) + len(bpg)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -150,8 +151,8 @@ func TestReduce_FailSitesCarryTrueOffsets(t *testing.T) {
 			if derr.Kind != afp.KindStructure {
 				t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindStructure)
 			}
-			if derr.Offset <= 0 {
-				t.Errorf("Offset = %d, want a true stream offset (> 0)", derr.Offset)
+			if derr.Offset != c.want {
+				t.Errorf("Offset = %d, want %d (field-start offset of the offending field)", derr.Offset, c.want)
 			}
 		})
 	}

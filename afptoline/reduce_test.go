@@ -557,7 +557,7 @@ func TestReduce_RejectsC1Controls(t *testing.T) {
 	for _, f := range [][]byte{bdt, bpg, c1PTX, epg, edt} {
 		buf.Write(f)
 	}
-	wantOffset := len(bdt) + len(bpg) + len(c1PTX)
+	wantOffset := len(bdt) + len(bpg)
 
 	_, _, err := Reduce(&buf)
 	if err == nil {
@@ -571,7 +571,7 @@ func TestReduce_RejectsC1Controls(t *testing.T) {
 		t.Errorf("FieldID = %q, want D3EE9B", derr.FieldID)
 	}
 	if derr.Offset != wantOffset {
-		t.Errorf("Offset = %d, want %d (cumulative offset through the offending PTX)", derr.Offset, wantOffset)
+		t.Errorf("Offset = %d, want %d (field-start offset of the offending PTX)", derr.Offset, wantOffset)
 	}
 
 	// The same C1 PTX also fails under ReduceWithBudget.
