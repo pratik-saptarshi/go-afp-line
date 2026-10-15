@@ -154,9 +154,9 @@ func DecodeTriplets(b []byte) (Triplets, error) {
 // state: a programming error.
 func (t Triplet) Encode() []byte {
 	n := len(t.Data) + 2
-	if n > maxTripletLen {
-		panic(fmt.Sprintf("afp: Triplet.Encode: Tlength %d exceeds the architectural maximum %d (triplet X'%02X carries %d data bytes)",
-			n, maxTripletLen, t.ID, len(t.Data)))
+	if n < minTripletLen || n > maxTripletLen {
+		panic(fmt.Sprintf("afp: Triplet.Encode: Tlength %d outside the architectural range %d..%d (triplet X'%02X carries %d data bytes)",
+			n, minTripletLen, maxTripletLen, t.ID, len(t.Data)))
 	}
 	b := make([]byte, 0, n)
 	b = append(b, byte(n), t.ID)

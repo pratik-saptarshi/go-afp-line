@@ -165,6 +165,16 @@ func TestTriplet_EncodeAboveArchitecturalMaxPanics(t *testing.T) {
 	})
 }
 
+func TestTriplet_EncodeBelowArchitecturalMinPanics(t *testing.T) {
+	// len(Data)+2 = 2 is below the architectural minimum (3) that
+	// DecodeTriplet enforces: clearing Data on a decoded triplet must fail
+	// loudly rather than emit a Tlength the decoder rejects.
+	tr := Triplet{ID: 0x65}
+	assertPanics(t, "Triplet.Encode with len(Data)+2 = 2 < minTripletLen", func() {
+		tr.Encode()
+	})
+}
+
 func TestTriplet_EncodeMaxTlength(t *testing.T) {
 	// Boundary: len(Data)+2 = 254 is the architectural maximum Tlength.
 	tr := Triplet{ID: 0x65, Data: bytes.Repeat([]byte{0xC8}, 252)}
