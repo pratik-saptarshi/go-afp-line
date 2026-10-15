@@ -58,8 +58,29 @@ func Reduce(r io.Reader) (line.Document, []line.Exclusion, error) {
 
 // ReduceWithBudget is Reduce with an explicit bound on the total decoded
 // text bytes of the document. A non-positive budget is rejected immediately,
-// before any input is read.
+// before any input is read. The decode uses code page 37, exactly as Reduce.
 func ReduceWithBudget(r io.Reader, maxTextBytes int) (line.Document, []line.Exclusion, error) {
+	cp, err := afp.LookupCodePage(37)
+	if err != nil {
+		return line.Document{}, nil, err
+	}
+	return reduceWithBudgetAndCodePage(r, maxTextBytes, cp)
+}
+
+// ReduceWithCodePage is Reduce with the EBCDIC code page used for PTOCA
+// text decode supplied explicitly by the caller, exposing a page the
+// default path cannot reach (ARCH-3: code page 500). Selecting the *correct*
+// code page from stream metadata (MCF/FQN) is out of scope — this only
+// exposes the knob; the caller names the page. The default behavior is
+// unchanged: ReduceWithCodePage(r, afp.LookupCodePage(37)) reduces exactly
+// like Reduce.
+func ReduceWithCodePage(r io.Reader, cp afp.CodePage) (line.Document, []line.Exclusion, error) {
+	return reduceWithBudgetAndCodePage(r, DefaultMaxTextBytes, cp)
+}
+
+// reduceWithBudgetAndCodePage is the shared implementation behind Reduce,
+// ReduceWithBudget and ReduceWithCodePage.
+func reduceWithBudgetAndCodePage(r io.Reader, maxTextBytes int, cp afp.CodePage) (line.Document, []line.Exclusion, error) {
 	if maxTextBytes <= 0 {
 		return line.Document{}, nil, fmt.Errorf("afptoline: non-positive text budget %d", maxTextBytes)
 	}
@@ -71,10 +92,6 @@ func ReduceWithBudget(r io.Reader, maxTextBytes int) (line.Document, []line.Excl
 	}
 	wrapped := afp.IsWrapped(data)
 	raws, err := afp.SplitFields(bytes.NewReader(data))
-	if err != nil {
-		return line.Document{}, nil, err
-	}
-	cp, err := afp.LookupCodePage(37)
 	if err != nil {
 		return line.Document{}, nil, err
 	}
