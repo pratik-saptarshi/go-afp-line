@@ -418,6 +418,21 @@ func TestPtocaStateText_SuppressedBypassesBudget(t *testing.T) {
 	}
 }
 
+// TestDoRPS_SuppressedBypassesBudget: an RPS inside a suppression region
+// neither allocates the repeat buffer nor checks the budget — the bytes are
+// dropped, mirroring TestPtocaStateText_SuppressedBypassesBudget.
+func TestDoRPS_SuppressedBypassesBudget(t *testing.T) {
+	// RPS params: RLENGTH = 65535, RPTDATA = "A" — would exceed any budget.
+	params := []byte{0xFF, 0xFF, 0xC1}
+	st := &ptocaState{remaining: 0, suppress: []byte{0x01}}
+	if err := doRPS(st, params, 0); err != nil {
+		t.Fatalf("suppressed RPS hit the budget: %v", err)
+	}
+	if len(st.cur) != 0 {
+		t.Fatalf("st.cur grew to %d bytes inside a suppression region", len(st.cur))
+	}
+}
+
 // TestDoRPS_BudgetPrecheck: doRPS fails fast before allocating the repeat
 // buffer when RLENGTH alone exceeds the remaining budget. RLENGTH=65535
 // against remaining=4096 must error with no large cur growth. The pre-check

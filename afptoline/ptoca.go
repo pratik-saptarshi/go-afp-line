@@ -392,6 +392,12 @@ func doRPS(st *ptocaState, params []byte, offset int) error {
 			Reason:  fmt.Sprintf("RPS RLENGTH %d exceeds available %d bytes", n, len(data)),
 		}
 	}
+	// Suppressed bytes are dropped without consuming budget (see text()), so
+	// a suppressed RPS neither allocates the repeat buffer nor checks the
+	// budget against it.
+	if len(st.suppress) > 0 {
+		return nil
+	}
 	// Fail fast before allocating the repeat buffer: an RLENGTH that alone
 	// exceeds the remaining budget can never be satisfied, so reject it
 	// without the up-to-64 KiB transient.

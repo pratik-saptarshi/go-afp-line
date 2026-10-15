@@ -81,20 +81,23 @@ func ReduceWithBudget(r io.Reader, maxTextBytes int) (line.Document, []line.Excl
 
 	st := &reduceState{cp: cp, textLeft: maxTextBytes}
 	for _, raw := range raws {
-		// Each SplitFields entry is the complete encoded field (starting at
-		// its introducer). On 5A-wrapped streams SplitFields strips the
-		// one-byte record marker, so add it back: st.off must be the true
-		// wire offset, not the stripped length.
-		st.off += len(raw)
-		if wrapped {
-			st.off++
-		}
 		f, err := afp.DecodeField(raw)
 		if err != nil {
 			return line.Document{}, st.excls, err
 		}
 		if err := st.visit(f); err != nil {
 			return line.Document{}, st.excls, err
+		}
+		// Advance past the field after visiting, so errors raised during
+		// visit see st.off as the field's start offset, matching
+		// DecodeError.Offset's documented meaning ("where decoding
+		// failed"). Each SplitFields entry is the complete encoded field
+		// (starting at its introducer). On 5A-wrapped streams SplitFields
+		// strips the one-byte record marker, so add it back: st.off must
+		// be the true wire offset, not the stripped length.
+		st.off += len(raw)
+		if wrapped {
+			st.off++
 		}
 	}
 	if err := st.finish(); err != nil {

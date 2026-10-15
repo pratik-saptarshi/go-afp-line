@@ -362,10 +362,10 @@ func TestReduceWithBudget_RPSAmplification(t *testing.T) {
 	for _, f := range [][]byte{bdt, bpg, ptx, epg, edt} {
 		buf.Write(f)
 	}
-	// Per the off-update rule (off advances before each visit), the error
-	// offset is the cumulative stream offset through the offending PTX —
-	// it identifies the field unambiguously.
-	wantOffset := len(bdt) + len(bpg) + len(ptx)
+	// The error offset is the offending PTX's start offset, matching
+	// DecodeError.Offset's documented meaning ("where decoding failed"):
+	// offset and FieldID identify the same field.
+	wantOffset := len(bdt) + len(bpg)
 
 	_, _, err := ReduceWithBudget(&buf, 4096)
 	if err == nil {
@@ -382,7 +382,7 @@ func TestReduceWithBudget_RPSAmplification(t *testing.T) {
 		t.Errorf("FieldID = %q, want D3EE9B", derr.FieldID)
 	}
 	if derr.Offset != wantOffset {
-		t.Errorf("Offset = %d, want %d (cumulative offset through the offending PTX)", derr.Offset, wantOffset)
+		t.Errorf("Offset = %d, want %d (offending PTX's start offset)", derr.Offset, wantOffset)
 	}
 }
 
@@ -442,7 +442,8 @@ func TestReduceWithBudget_CumulativeAcrossPTX(t *testing.T) {
 	for _, f := range [][]byte{bdt, bpg, ptx1, ptx2, epg, edt} {
 		buf.Write(f)
 	}
-	wantOffset := len(bdt) + len(bpg) + len(ptx1) + len(ptx2)
+	// The budget fails on ptx2, so the error offset is ptx2's start.
+	wantOffset := len(bdt) + len(bpg) + len(ptx1)
 
 	_, _, err := ReduceWithBudget(&buf, 4096)
 	if err == nil {
@@ -502,9 +503,9 @@ func TestReduceWithBudget_ExactBudget(t *testing.T) {
 }
 
 // TestReduceWithBudget_WrappedOffset: on 5A-wrapped streams the budget
-// error's offset is the true wire offset — SplitFields strips the 5A record
-// marker, so each field contributes its bytes plus one framing byte through
-// the offending PTX.
+// error's offset is the offending PTX's true wire start offset — SplitFields
+// strips the 5A record marker, so each field contributes its bytes plus one
+// framing byte.
 func TestReduceWithBudget_WrappedOffset(t *testing.T) {
 	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
 	bpg := rawField(tBPG, ebcdicSpaces(8))
@@ -518,7 +519,7 @@ func TestReduceWithBudget_WrappedOffset(t *testing.T) {
 		buf.WriteByte(0x5A)
 		buf.Write(f)
 	}
-	wantOffset := (len(bdt) + 1) + (len(bpg) + 1) + (len(ptx) + 1)
+	wantOffset := (len(bdt) + 1) + (len(bpg) + 1)
 
 	_, _, err := ReduceWithBudget(&buf, 1024)
 	if err == nil {
@@ -532,7 +533,7 @@ func TestReduceWithBudget_WrappedOffset(t *testing.T) {
 		t.Errorf("FieldID = %q, want D3EE9B", derr.FieldID)
 	}
 	if derr.Offset != wantOffset {
-		t.Errorf("Offset = %d, want %d (true wire offset through the offending PTX)", derr.Offset, wantOffset)
+		t.Errorf("Offset = %d, want %d (true wire start offset of the offending PTX)", derr.Offset, wantOffset)
 	}
 	if derr.Reason != budgetExceededReason {
 		t.Errorf("Reason = %q, want %q", derr.Reason, budgetExceededReason)
