@@ -58,8 +58,29 @@ func Reduce(r io.Reader) (line.Document, []line.Exclusion, error) {
 
 // ReduceWithBudget is Reduce with an explicit bound on the total decoded
 // text bytes of the document. A non-positive budget is rejected immediately,
-// before any input is read.
+// before any input is read. The decode uses code page 37, exactly as Reduce.
 func ReduceWithBudget(r io.Reader, maxTextBytes int) (line.Document, []line.Exclusion, error) {
+	cp, err := afp.LookupCodePage(37)
+	if err != nil {
+		return line.Document{}, nil, err
+	}
+	return reduceWithBudgetAndCodePage(r, maxTextBytes, cp)
+}
+
+// ReduceWithCodePage is Reduce with the EBCDIC code page used for PTOCA
+// text decode supplied explicitly by the caller, exposing a page the
+// default path cannot reach (ARCH-3: code page 500). Selecting the *correct*
+// code page from stream metadata (MCF/FQN) is out of scope — this only
+// exposes the knob; the caller names the page. The default behavior is
+// unchanged: reducing with the code page from afp.LookupCodePage(37)
+// behaves exactly like Reduce.
+func ReduceWithCodePage(r io.Reader, cp afp.CodePage) (line.Document, []line.Exclusion, error) {
+	return reduceWithBudgetAndCodePage(r, DefaultMaxTextBytes, cp)
+}
+
+// reduceWithBudgetAndCodePage is the shared implementation behind Reduce,
+// ReduceWithBudget and ReduceWithCodePage.
+func reduceWithBudgetAndCodePage(r io.Reader, maxTextBytes int, cp afp.CodePage) (line.Document, []line.Exclusion, error) {
 	if maxTextBytes <= 0 {
 		return line.Document{}, nil, fmt.Errorf("afptoline: non-positive text budget %d", maxTextBytes)
 	}
@@ -71,10 +92,6 @@ func ReduceWithBudget(r io.Reader, maxTextBytes int) (line.Document, []line.Excl
 	}
 	wrapped := afp.IsWrapped(data)
 	raws, err := afp.SplitFields(bytes.NewReader(data))
-	if err != nil {
-		return line.Document{}, nil, err
-	}
-	cp, err := afp.LookupCodePage(37)
 	if err != nil {
 		return line.Document{}, nil, err
 	}
@@ -188,7 +205,7 @@ func (st *reduceState) visitRaw(t *afp.RawField) error {
 		return st.visitPTX(t)
 	}
 	if t.Excluded {
-		st.excls = append(st.excls, exclusionFor(t))
+		st.excls = append(st.excls, exclusionFor(t, st.cp))
 		return nil
 	}
 	// Contracted in-subset, no v1 content semantics: pairing-validate the
@@ -309,10 +326,10 @@ func fontIDForLID(lid byte, offset int) (string, error) {
 // exclusionFor builds the loud diagnostic for a known-excluded field.
 // IMM is special-cased: the diagnostic names the referenced medium map so the
 // FormDef/PageDef reference is visible, not just the field type.
-func exclusionFor(f *afp.RawField) line.Exclusion {
+func exclusionFor(f *afp.RawField, cp afp.CodePage) line.Exclusion {
 	id := f.TypeID()
 	if id == immTypeID {
-		name := mediumMapName(f.Data)
+		name := mediumMapName(f.Data, cp)
 		return line.Exclusion{
 			FieldType: "IMM",
 			Reason:    fmt.Sprintf("references medium map %q: FormDef/PageDef medium definitions are outside the v1 contracted subset", name),
@@ -330,13 +347,10 @@ func exclusionFor(f *afp.RawField) line.Exclusion {
 }
 
 // mediumMapName decodes the MMPName CHAR[8] at the start of IMM field data
-// (EBCDIC-037, blank-padded) for the loud FormDef-reference diagnostic.
-func mediumMapName(data []byte) string {
+// (blank-padded) with the caller's code page for the loud FormDef-reference
+// diagnostic.
+func mediumMapName(data []byte, cp afp.CodePage) string {
 	if len(data) < 8 {
-		return ""
-	}
-	cp, err := afp.LookupCodePage(37)
-	if err != nil {
 		return ""
 	}
 	return strings.TrimRight(cp.Decode(data[:8]), " \x00")

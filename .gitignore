@@ -1,3 +1,4 @@
 # Heavy research material stays on disk, not in git (cloned reference repos + source PDFs).
 # The distilled notes (*.md, extracted .txt) are committed.
 docs/_evidence/afp-research/
+docs/_evidence/modca/

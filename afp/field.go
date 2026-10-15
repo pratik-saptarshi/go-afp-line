@@ -5,13 +5,29 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // Field is a decoded MO:DCA structured field.
 //
 // TypeID returns the 3-byte structured field identifier as uppercase hex,
-// e.g. "D3A8A8". Encode re-serializes the field; decode followed by Encode
-// is byte-identical for every Field implementation.
+// e.g. "D3A8A8".
+//
+// Encode re-serializes the field; decode followed by Encode is byte-identical
+// for every Field implementation.
+//
+// Encode failure policy (fail-loud, one policy for every Encode method in
+// this package): the introducer length is always recomputed from the encoded
+// body — the stored Introducer.Length is never trusted, so mutating a
+// decoded field re-encodes with a correct length prefix. Encode panics,
+// rather than silently truncating or substituting, when the field state
+// cannot be represented on the wire: a triplet whose data exceeds the 1-byte
+// Tlength field, a CHAR parameter with a rune that has no EBCDIC-037 mapping
+// or more than 8 characters, or a total length beyond the MO:DCA 32,767-byte
+// maximum. DecodeField and DecodeTriplet validate all of these at
+// construction, so a panic only fires on post-decode mutation of a decoded
+// field — a programming error. Decode-side failures stay typed DecodeError
+// returns; panics are encode-side only.
 type Field interface {
 	TypeID() string
 	Encode() []byte
@@ -25,16 +41,35 @@ type BDT struct {
 	Triplets Triplets // parsed triplet run; re-encoded byte-identically
 }
 
+// encodeField assembles a field's wire bytes from its introducer and an
+// already-encoded body. The introducer length is recomputed from the body —
+// never trusted from stored state — so a field mutated after decoding
+// re-encodes with a correct SFLength prefix. A total length beyond the
+// MO:DCA architectural maximum cannot be represented on the wire: it panics
+// loudly per the Field encode failure policy instead of emitting a bogus
+// length.
+func encodeField(in Introducer, body []byte) []byte {
+	in.Length = in.HeaderLength() + len(body)
+	if in.Length > maxSFLength {
+		panic(fmt.Sprintf("afp: field %s: encoded length %d exceeds the MO:DCA maximum %d",
+			in.TypeIDString(), in.Length, maxSFLength))
+	}
+	head := in.Encode()
+	out := make([]byte, 0, len(head)+len(body))
+	out = append(out, head...)
+	return append(out, body...)
+}
+
 // TypeID implements Field.
 func (f *BDT) TypeID() string { return f.Intro.TypeIDString() }
 
 // Encode implements Field.
 func (f *BDT) Encode() []byte {
-	b := f.Intro.Encode()
-	b = append(b, encodeCHAR8(f.DocName)...)
-	b = append(b, f.Reserved[0], f.Reserved[1])
-	b = append(b, f.Triplets.Encode()...)
-	return b
+	body := make([]byte, 0, 10)
+	body = append(body, encodeCHAR8(f.DocName)...)
+	body = append(body, f.Reserved[0], f.Reserved[1])
+	body = append(body, f.Triplets.Encode()...)
+	return encodeField(f.Intro, body)
 }
 
 // EDT is an End Document structured field (D3A9A8).
@@ -50,11 +85,11 @@ func (f *EDT) TypeID() string { return f.Intro.TypeIDString() }
 
 // Encode implements Field.
 func (f *EDT) Encode() []byte {
-	b := f.Intro.Encode()
-	b = append(b, encodeCHAR8(f.DocName)...)
-	b = append(b, f.Reserved[0], f.Reserved[1])
-	b = append(b, f.Triplets.Encode()...)
-	return b
+	body := make([]byte, 0, 10)
+	body = append(body, encodeCHAR8(f.DocName)...)
+	body = append(body, f.Reserved[0], f.Reserved[1])
+	body = append(body, f.Triplets.Encode()...)
+	return encodeField(f.Intro, body)
 }
 
 // BPG is a Begin Page structured field (D3A8AF).
@@ -72,12 +107,12 @@ func (f *BPG) TypeID() string { return f.Intro.TypeIDString() }
 
 // Encode implements Field.
 func (f *BPG) Encode() []byte {
-	b := f.Intro.Encode()
+	body := make([]byte, 0, 8)
 	if f.HasPageName {
-		b = append(b, encodeCHAR8(f.PageName)...)
+		body = append(body, encodeCHAR8(f.PageName)...)
 	}
-	b = append(b, f.Triplets.Encode()...)
-	return b
+	body = append(body, f.Triplets.Encode()...)
+	return encodeField(f.Intro, body)
 }
 
 // EPG is an End Page structured field (D3A9AF).
@@ -93,12 +128,12 @@ func (f *EPG) TypeID() string { return f.Intro.TypeIDString() }
 
 // Encode implements Field.
 func (f *EPG) Encode() []byte {
-	b := f.Intro.Encode()
+	body := make([]byte, 0, 8)
 	if f.HasPageName {
-		b = append(b, encodeCHAR8(f.PageName)...)
+		body = append(body, encodeCHAR8(f.PageName)...)
 	}
-	b = append(b, f.Triplets.Encode()...)
-	return b
+	body = append(body, f.Triplets.Encode()...)
+	return encodeField(f.Intro, body)
 }
 
 // RawField is an opaque passthrough for a well-formed field that has no
@@ -118,9 +153,7 @@ func (f *RawField) TypeID() string { return f.Intro.TypeIDString() }
 
 // Encode implements Field.
 func (f *RawField) Encode() []byte {
-	b := f.Intro.Encode()
-	b = append(b, f.Data...)
-	return b
+	return encodeField(f.Intro, f.Data)
 }
 
 // fieldKind classifies a registered structured field type.
@@ -421,45 +454,47 @@ func decodeCHAR(b []byte) string {
 }
 
 // encodeCHAR8 encodes a name back to 8 EBCDIC-037 bytes, space-padded.
-// Every rune produced by decodeCHAR reverse-maps; anything else becomes
-// '?' (0x6F) rather than silently corrupting the stream.
+//
+// The reverse map covers the full EBCDIC-037 table, so every rune
+// decodeCHAR can produce maps back to its original byte: decode followed by
+// encodeCHAR8 is byte-identical. A rune with no EBCDIC-037 mapping, or a
+// name longer than 8 characters, cannot be represented in a CHAR[8]
+// parameter — both panic loudly per the Field encode failure policy rather
+// than substituting '?' or truncating (silent data corruption).
 func encodeCHAR8(s string) []byte {
+	if n := utf8.RuneCountInString(s); n > 8 {
+		panic(fmt.Sprintf("afp: encodeCHAR8: name %q has %d characters, exceeding CHAR[8]",
+			TruncateEcho(s), n))
+	}
 	out := make([]byte, 8)
 	for i := range out {
 		out[i] = 0x40 // EBCDIC space padding
 	}
 	i := 0
 	for _, r := range s {
-		if i >= 8 {
-			break
+		b, ok := ebcdic037Encode[r]
+		if !ok {
+			panic(fmt.Sprintf("afp: encodeCHAR8: rune U+%04X has no EBCDIC-037 mapping", r))
 		}
-		out[i] = asciiToEbcdic037(r)
+		out[i] = b
 		i++
 	}
 	return out
 }
 
-// asciiToEbcdic037 maps a rune back to EBCDIC-037; unmappable runes become
-// '?' (0x6F).
-func asciiToEbcdic037(r rune) byte {
-	if r < 128 {
-		if b := ebcdic037Reverse[r]; b != 0 || r == 0 {
-			return b
-		}
-		// NUL (0x00) reverse-maps ambiguously; fall through to '?'.
-	}
-	return 0x6F
-}
+// ebcdic037Encode is the complete inverse of the EBCDIC-037 decode table:
+// every rune decodeCHAR can emit maps back to its source byte. The decode
+// table is injective (no two bytes share a rune), so the inverse is total
+// over decoded output. Runes outside the table (e.g. U+20AC) have no entry
+// and make encodeCHAR8 panic.
+var ebcdic037Encode = buildEbcdic037Encode()
 
-// ebcdic037Reverse is built at init from ebcdic037 for the ASCII range.
-var ebcdic037Reverse [128]byte
-
-func init() {
+func buildEbcdic037Encode() map[rune]byte {
+	m := make(map[rune]byte, 256)
 	for b, r := range ebcdic037 {
-		if r < 128 && r != 0 {
-			ebcdic037Reverse[r] = byte(b)
-		}
+		m[r] = byte(b)
 	}
+	return m
 }
 
 // ebcdic037 is the EBCDIC-037 decode table, promoted to the code-page

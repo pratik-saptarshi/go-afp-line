@@ -3,6 +3,7 @@ package afp
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -186,4 +187,83 @@ func FuzzDecodeIntroducer(f *testing.F) {
 			t.Fatalf("Length out of range: %d", in.Length)
 		}
 	})
+}
+
+// TestSplitFields_CorruptRecordMarker: a 5A-wrapped stream whose record marker
+// byte is corrupt (not 0x5A) must fail loudly with KindStructure naming the
+// record's start offset — the byte must be verified before stripping, never
+// silently skipped.
+func TestSplitFields_CorruptRecordMarker(t *testing.T) {
+	f1, f2 := splitterFields()
+	var wrapped []byte
+	wrapped = append(wrapped, 0x5A)
+	wrapped = append(wrapped, f1...)
+	wrapped = append(wrapped, 0x00) // corrupt marker: expected 0x5A
+	wrapped = append(wrapped, f2...)
+
+	_, err := SplitFields(bytes.NewReader(wrapped))
+	var derr DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("expected DecodeError, got %T (%v)", err, err)
+	}
+	if derr.Kind != KindStructure {
+		t.Errorf("Kind = %q, want %q", derr.Kind, KindStructure)
+	}
+	wantOffset := 1 + len(f1) // start of the corrupt record
+	if derr.Offset != wantOffset {
+		t.Errorf("Offset = %d, want %d (start of the corrupt record)", derr.Offset, wantOffset)
+	}
+	if !strings.Contains(derr.Reason, "expected 5A record marker") {
+		t.Errorf("Reason = %q, want it to name the 5A record marker", derr.Reason)
+	}
+}
+
+// TestSplitFields_ValidMarkersStillParse: the marker check must not disturb
+// well-formed wrapped or naked streams — both parse as before.
+func TestSplitFields_ValidMarkersStillParse(t *testing.T) {
+	f1, f2 := splitterFields()
+	var wrapped []byte
+	wrapped = append(wrapped, 0x5A)
+	wrapped = append(wrapped, f1...)
+	wrapped = append(wrapped, 0x5A)
+	wrapped = append(wrapped, f2...)
+	var naked []byte
+	naked = append(naked, f1...)
+	naked = append(naked, f2...)
+
+	for name, data := range map[string][]byte{"wrapped": wrapped, "naked": naked} {
+		fields, err := SplitFields(bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("SplitFields(%s): unexpected error: %v", name, err)
+		}
+		if len(fields) != 2 || !bytes.Equal(fields[0], f1) || !bytes.Equal(fields[1], f2) {
+			t.Errorf("SplitFields(%s): fields mismatch", name)
+		}
+	}
+}
+
+// TestIntroducerEncode_RangePanics: Encode must fail loudly (not wrap) on
+// wire-unrepresentable Length, mirroring DecodeIntroducer's 8..32767 range.
+func TestIntroducerEncode_RangePanics(t *testing.T) {
+	base := Introducer{TypeID: [3]byte{0xD3, 0xA8, 0xA8}}
+	for _, length := range []int{0, 7, 32768, 70000} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("Introducer{Length: %d}.Encode() did not panic", length)
+				}
+			}()
+			in := base
+			in.Length = length
+			_ = in.Encode()
+		}()
+	}
+	// Boundary values still encode.
+	for _, length := range []int{8, 32767} {
+		in := base
+		in.Length = length
+		if got := in.Encode(); len(got) < 2 || int(got[0])<<8|int(got[1]) != length {
+			t.Errorf("Introducer{Length: %d}.Encode() = %x, want length prefix %d", length, got, length)
+		}
+	}
 }

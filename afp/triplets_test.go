@@ -2,8 +2,28 @@ package afp
 
 import (
 	"bytes"
+	"encoding/binary"
+	"strings"
 	"testing"
 )
+
+// assertPanics fails the test unless f panics. Encode-side failures are
+// programmer errors (post-decode mutation into wire-unrepresentable state),
+// so the contract fails loudly with a panic rather than returning an error.
+func assertPanics(t *testing.T, what string, f func()) {
+	t.Helper()
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Errorf("%s: expected panic, none occurred", what)
+			return
+		}
+		if s, ok := r.(string); ok && !strings.HasPrefix(s, "afp: ") {
+			t.Errorf("%s: panic %q does not carry the afp: prefix", what, s)
+		}
+	}()
+	f()
+}
 
 // Comment triplet X'65' carrying "HELLO" in EBCDIC-037:
 // Tlength=7 (includes itself), Tid=0x65, 5 content bytes.
@@ -123,5 +143,76 @@ func TestRoundTrip_UnknownField(t *testing.T) {
 	doc := append(append([]byte{}, bdtHello...), unknownField...)
 	if err := RoundTrip(bytes.NewReader(doc)); err == nil {
 		t.Errorf("RoundTrip(unknown field) = nil error, want DecodeError")
+	}
+}
+
+func TestTriplet_EncodeOverflowPanics(t *testing.T) {
+	// len(Data)+2 = 256 exceeds the 1-byte Tlength field. The old code
+	// emitted byte(256) = 0x00 silently; the contract panics loudly.
+	tr := Triplet{ID: 0x65, Data: make([]byte, 254)}
+	assertPanics(t, "Triplet.Encode with len(Data)+2 > 255", func() {
+		tr.Encode()
+	})
+}
+
+func TestTriplet_EncodeAboveArchitecturalMaxPanics(t *testing.T) {
+	// len(Data)+2 = 255 fits the 1-byte field but exceeds the architectural
+	// maximum (254) that DecodeTriplet enforces: Encode must refuse to emit
+	// a triplet its own decoder rejects.
+	tr := Triplet{ID: 0x65, Data: bytes.Repeat([]byte{0xC8}, 253)}
+	assertPanics(t, "Triplet.Encode with len(Data)+2 = 255 > maxTripletLen", func() {
+		tr.Encode()
+	})
+}
+
+func TestTriplet_EncodeBelowArchitecturalMinPanics(t *testing.T) {
+	// len(Data)+2 = 2 is below the architectural minimum (3) that
+	// DecodeTriplet enforces: clearing Data on a decoded triplet must fail
+	// loudly rather than emit a Tlength the decoder rejects.
+	tr := Triplet{ID: 0x65}
+	assertPanics(t, "Triplet.Encode with len(Data)+2 = 2 < minTripletLen", func() {
+		tr.Encode()
+	})
+}
+
+func TestTriplet_EncodeMaxTlength(t *testing.T) {
+	// Boundary: len(Data)+2 = 254 is the architectural maximum Tlength.
+	tr := Triplet{ID: 0x65, Data: bytes.Repeat([]byte{0xC8}, 252)}
+	enc := tr.Encode()
+	if len(enc) != 254 {
+		t.Fatalf("len(Encode()) = %d, want 254", len(enc))
+	}
+	if enc[0] != 0xFE {
+		t.Errorf("Tlength byte = 0x%02X, want 0xFE", enc[0])
+	}
+	if enc[1] != 0x65 {
+		t.Errorf("Tid byte = 0x%02X, want 0x65", enc[1])
+	}
+}
+
+func TestBDT_EncodeRecomputesLengthAfterTripletMutation(t *testing.T) {
+	// Decode a BDT, then mutate its triplets post-decode. Encode must
+	// emit a correct SFLength prefix recomputed from the new body, not
+	// the stale stored Length (old code emitted 0x0016 for a 26-byte
+	// field), and the re-encoded bytes must round-trip stably.
+	f, err := DecodeField(bdtWithComment)
+	if err != nil {
+		t.Fatalf("DecodeField(BDT+triplet) error: %v", err)
+	}
+	bdt, ok := f.(*BDT)
+	if !ok {
+		t.Fatalf("type = %T, want *BDT", f)
+	}
+	bdt.Triplets = append(bdt.Triplets, Triplet{ID: 0x65, Data: []byte{0xC8, 0xC9}})
+	enc := bdt.Encode()
+	if prefix := int(binary.BigEndian.Uint16(enc[0:2])); prefix != len(enc) {
+		t.Errorf("SFLength prefix = %d, want encoded length %d (stale Length)", prefix, len(enc))
+	}
+	f2, err := DecodeField(enc)
+	if err != nil {
+		t.Fatalf("DecodeField(re-encoded BDT) error: %v", err)
+	}
+	if enc2 := f2.Encode(); !bytes.Equal(enc2, enc) {
+		t.Errorf("re-encode mismatch:\nfirst  % X\nsecond % X", enc, enc2)
 	}
 }

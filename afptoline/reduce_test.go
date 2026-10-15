@@ -601,3 +601,74 @@ func TestReduce_RejectsC1Controls(t *testing.T) {
 		t.Errorf("run text = %q, want %q", got, "AB")
 	}
 }
+
+// TestReduceWithCodePage_CP500: EBCDIC byte 0x4A decodes to U+00A2 (¢) in
+// code page 037 but U+005B ([) in code page 500, so the same PTX yields
+// different text under the two pages. ReduceWithCodePage must honor the
+// given page; Reduce must stay on 37 (default behavior byte-identical).
+func TestReduceWithCodePage_CP500(t *testing.T) {
+	build := func() []byte {
+		bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+		bpg := rawField(tBPG, ebcdicSpaces(8))
+		ptx := rawField(tPTX, trn(0x4A))
+		epg := rawField(tEPG, ebcdicSpaces(8))
+		edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+		var buf bytes.Buffer
+		for _, f := range [][]byte{bdt, bpg, ptx, epg, edt} {
+			buf.Write(f)
+		}
+		return buf.Bytes()
+	}
+	cp500, err := afp.LookupCodePage(500)
+	if err != nil {
+		t.Fatalf("LookupCodePage(500): %v", err)
+	}
+	doc500, _, err := ReduceWithCodePage(bytes.NewReader(build()), cp500)
+	if err != nil {
+		t.Fatalf("ReduceWithCodePage(500): %v", err)
+	}
+	if got := doc500.Pages[0].Runs[0].Text; got != "[" {
+		t.Errorf("ReduceWithCodePage(500): text = %q, want %q", got, "[")
+	}
+	// Reduce on the same input must decode as code page 37, unchanged.
+	doc37, _, err := Reduce(bytes.NewReader(build()))
+	if err != nil {
+		t.Fatalf("Reduce: %v", err)
+	}
+	if got := doc37.Pages[0].Runs[0].Text; got != "¢" {
+		t.Errorf("Reduce: text = %q, want %q (code page 37)", got, "¢")
+	}
+}
+
+// TestReduceWithCodePage_IMMNameDecoding: the IMM exclusion diagnostic decodes
+// MMPName with the caller-selected code page, not hardcoded 37.
+func TestReduceWithCodePage_IMMNameDecoding(t *testing.T) {
+	tIMM := [3]byte{0xD3, 0xAB, 0xCC}
+	build := func() []byte {
+		bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+		bpg := rawField(tBPG, ebcdicSpaces(8))
+		name := append([]byte{0x4A}, ebcdicSpaces(7)...)
+		imm := rawField(tIMM, name)
+		epg := rawField(tEPG, ebcdicSpaces(8))
+		edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+		var buf bytes.Buffer
+		for _, f := range [][]byte{bdt, bpg, imm, epg, edt} {
+			buf.Write(f)
+		}
+		return buf.Bytes()
+	}
+	cp500, err := afp.LookupCodePage(500)
+	if err != nil {
+		t.Fatalf("LookupCodePage(500): %v", err)
+	}
+	_, excls, err := ReduceWithCodePage(bytes.NewReader(build()), cp500)
+	if err != nil {
+		t.Fatalf("ReduceWithCodePage(500): %v", err)
+	}
+	if len(excls) != 1 {
+		t.Fatalf("got %d exclusions, want 1 (IMM)", len(excls))
+	}
+	if d := excls[0].Diagnostic(); !strings.Contains(d, "[") {
+		t.Errorf("diagnostic %q does not contain cp500-decoded name %q", d, "[")
+	}
+}
