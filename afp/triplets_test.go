@@ -38,9 +38,9 @@ var bdtWithComment = []byte{
 }
 
 func TestDecodeTriplet_Comment(t *testing.T) {
-	tr, n, err := DecodeTriplet(commentHello)
+	tr, n, err := decodeTriplet(commentHello)
 	if err != nil {
-		t.Fatalf("DecodeTriplet(Comment) error: %v", err)
+		t.Fatalf("decodeTriplet(Comment) error: %v", err)
 	}
 	if n != len(commentHello) {
 		t.Errorf("consumed = %d, want %d", n, len(commentHello))
@@ -55,10 +55,10 @@ func TestDecodeTriplet_Comment(t *testing.T) {
 
 func TestDecodeTriplet_UnknownID(t *testing.T) {
 	// Tid 0xFF is not in the registered set: typed error, not silent skip.
-	_, _, err := DecodeTriplet([]byte{0x03, 0xFF, 0x00})
+	_, _, err := decodeTriplet([]byte{0x03, 0xFF, 0x00})
 	derr, ok := err.(DecodeError)
 	if !ok {
-		t.Fatalf("DecodeTriplet(unknown ID) error = %T (%v), want DecodeError", err, err)
+		t.Fatalf("decodeTriplet(unknown ID) error = %T (%v), want DecodeError", err, err)
 	}
 	if derr.Offset != 0 {
 		t.Errorf("Offset = %d, want 0", derr.Offset)
@@ -67,15 +67,15 @@ func TestDecodeTriplet_UnknownID(t *testing.T) {
 
 func TestDecodeTriplet_Truncated(t *testing.T) {
 	// Tlength claims 5, only 3 bytes present.
-	if _, _, err := DecodeTriplet([]byte{0x05, 0x65, 0xC8}); err == nil {
-		t.Errorf("DecodeTriplet(truncated) = nil error, want DecodeError")
+	if _, _, err := decodeTriplet([]byte{0x05, 0x65, 0xC8}); err == nil {
+		t.Errorf("decodeTriplet(truncated) = nil error, want DecodeError")
 	}
 }
 
 func TestDecodeTriplet_BadLength(t *testing.T) {
 	// Tlength=2 is below the architectural minimum of 3.
-	if _, _, err := DecodeTriplet([]byte{0x02, 0x65}); err == nil {
-		t.Errorf("DecodeTriplet(Tlength=2) = nil error, want DecodeError")
+	if _, _, err := decodeTriplet([]byte{0x02, 0x65}); err == nil {
+		t.Errorf("decodeTriplet(Tlength=2) = nil error, want DecodeError")
 	}
 }
 
@@ -157,7 +157,7 @@ func TestTriplet_EncodeOverflowPanics(t *testing.T) {
 
 func TestTriplet_EncodeAboveArchitecturalMaxPanics(t *testing.T) {
 	// len(Data)+2 = 255 fits the 1-byte field but exceeds the architectural
-	// maximum (254) that DecodeTriplet enforces: Encode must refuse to emit
+	// maximum (254) that decodeTriplet enforces: Encode must refuse to emit
 	// a triplet its own decoder rejects.
 	tr := Triplet{ID: 0x65, Data: bytes.Repeat([]byte{0xC8}, 253)}
 	assertPanics(t, "Triplet.Encode with len(Data)+2 = 255 > maxTripletLen", func() {
@@ -167,7 +167,7 @@ func TestTriplet_EncodeAboveArchitecturalMaxPanics(t *testing.T) {
 
 func TestTriplet_EncodeBelowArchitecturalMinPanics(t *testing.T) {
 	// len(Data)+2 = 2 is below the architectural minimum (3) that
-	// DecodeTriplet enforces: clearing Data on a decoded triplet must fail
+	// decodeTriplet enforces: clearing Data on a decoded triplet must fail
 	// loudly rather than emit a Tlength the decoder rejects.
 	tr := Triplet{ID: 0x65}
 	assertPanics(t, "Triplet.Encode with len(Data)+2 = 2 < minTripletLen", func() {

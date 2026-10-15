@@ -130,10 +130,11 @@ func (m FontMetrics) Width(s string, size float64) float64 {
 	return total / float64(m.UnitsPerEm) * size
 }
 
-// PinnedFonts is the synthetic, pinned metrics table for fixture fonts,
+// pinnedFonts is the synthetic, pinned metrics table for fixture fonts,
 // per the subset contract's font-resolution story (v1). Real AFP font
 // resources (FOCA) are excluded; fixtures declare their metrics here.
-var PinnedFonts = map[string]FontMetrics{
+// Unexported: callers use LookupFont, which returns a defensive copy.
+var pinnedFonts = map[string]FontMetrics{
 	// FIX-MONO-10: synthetic monospace, 600/1000 em for every glyph.
 	"FIX-MONO-10": {
 		UnitsPerEm:     1000,
@@ -155,8 +156,18 @@ var PinnedFonts = map[string]FontMetrics{
 	},
 }
 
-// LookupFont returns the pinned metrics for a fixture font ID.
+// LookupFont returns the pinned metrics for a fixture font ID. The
+// returned Advances map is a copy: mutating it does not affect the
+// registry.
 func LookupFont(id string) (FontMetrics, bool) {
-	m, ok := PinnedFonts[id]
-	return m, ok
+	m, ok := pinnedFonts[id]
+	if !ok {
+		return FontMetrics{}, false
+	}
+	cp := m
+	cp.Advances = make(map[rune]float64, len(m.Advances))
+	for r, adv := range m.Advances {
+		cp.Advances[r] = adv
+	}
+	return cp, true
 }

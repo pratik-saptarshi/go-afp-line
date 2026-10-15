@@ -82,11 +82,11 @@ var knownTripletIDs = map[byte]string{
 // commentTripletID is the Comment triplet, the only triplet v1 interprets.
 const commentTripletID = 0x65
 
-// DecodeTriplet decodes a single triplet at the start of b, returning the
+// decodeTriplet decodes a single triplet at the start of b, returning the
 // triplet and the number of bytes consumed. Tlength is validated against the
 // architectural range before any slice is taken; unknown triplet IDs are a
 // typed DecodeError (offset relative to the start of b).
-func DecodeTriplet(b []byte) (Triplet, int, error) {
+func decodeTriplet(b []byte) (Triplet, int, error) {
 	if len(b) < 2 {
 		return Triplet{}, 0, DecodeError{
 			Offset: 0,
@@ -122,14 +122,14 @@ func DecodeTriplet(b []byte) (Triplet, int, error) {
 	return Triplet{ID: tid, Data: data}, tlen, nil
 }
 
-// DecodeTriplets decodes a whole triplet run (e.g. the trailing bytes of a
+// decodeTriplets decodes a whole triplet run (e.g. the trailing bytes of a
 // BDT). An empty run decodes to nil with no error. Offsets in returned
 // DecodeErrors are relative to the start of b; callers re-base them.
-func DecodeTriplets(b []byte) (Triplets, error) {
+func decodeTriplets(b []byte) (Triplets, error) {
 	var out Triplets
 	off := 0
 	for off < len(b) {
-		tr, n, err := DecodeTriplet(b[off:])
+		tr, n, err := decodeTriplet(b[off:])
 		if err != nil {
 			var derr DecodeError
 			if errors.As(err, &derr) {
@@ -148,7 +148,7 @@ func DecodeTriplets(b []byte) (Triplets, error) {
 //
 // The Tlength byte is recomputed from the data on every call. A triplet
 // whose data does not fit the architectural maximum (len(Data)+2 > 254)
-// cannot be decoded back — DecodeTriplet rejects Tlength > 254 — so Encode
+// cannot be decoded back — decodeTriplet rejects Tlength > 254 — so Encode
 // panics loudly rather than emitting a triplet its own decoder rejects.
 // This only fires when a decoded triplet is mutated into an unrepresentable
 // state: a programming error.

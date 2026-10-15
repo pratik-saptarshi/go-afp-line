@@ -23,10 +23,10 @@ func (c CodePage) Decode(b []byte) string {
 	return string(rs)
 }
 
-// CodePages is the v1 registry of supported code pages, keyed by CPGID.
+// codePages is the v1 registry of supported code pages, keyed by CPGID.
 // See docs/subset-contract.md §6: only 037 and 500 are in scope; any other
 // code-page ID is an explicit exclusion with a diagnostic.
-var CodePages = map[uint16]CodePage{
+var codePages = map[uint16]CodePage{
 	37:  {CPGID: 37, table: cp037Table},
 	500: {CPGID: 500, table: cp500Table},
 }
@@ -35,7 +35,7 @@ var CodePages = map[uint16]CodePage{
 // ID fails loudly with a typed DecodeError — the exclusion path. Callers
 // must not fall back to a default page.
 func LookupCodePage(cpgid uint16) (CodePage, error) {
-	if cp, ok := CodePages[cpgid]; ok {
+	if cp, ok := codePages[cpgid]; ok {
 		return cp, nil
 	}
 	return CodePage{}, DecodeError{

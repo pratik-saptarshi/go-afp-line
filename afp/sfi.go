@@ -73,7 +73,7 @@ func (in Introducer) HasPadding() bool { return in.Flags&flagPad != 0 }
 // Encode serializes the introducer back to its wire bytes.
 // Decode followed by Encode is byte-identical for the introducer.
 func (in Introducer) Encode() []byte {
-	// Mirror DecodeIntroducer's 8..32767 range: a wire-unrepresentable
+	// Mirror decodeIntroducer's 8..32767 range: a wire-unrepresentable
 	// Length can only come from post-decode caller mutation (programmer
 	// error), so fail loudly rather than wrapping the length bytes.
 	if in.Length < sfiLen || in.Length > maxSFLength {
@@ -86,12 +86,12 @@ func (in Introducer) Encode() []byte {
 	return b
 }
 
-// DecodeIntroducer parses the structured field introducer at the start of b.
+// decodeIntroducer parses the structured field introducer at the start of b.
 // b must hold at least the introducer; it may hold more (the field data is
 // not consumed). A claimed length is never trusted for allocation: lengths
 // above MaxFieldSize or the architectural maximum are rejected before any
 // allocation could occur.
-func DecodeIntroducer(b []byte) (Introducer, error) {
+func decodeIntroducer(b []byte) (Introducer, error) {
 	if len(b) < sfiLen {
 		return Introducer{}, DecodeError{
 			Kind:   KindStructure,
@@ -159,14 +159,14 @@ func DecodeIntroducer(b []byte) (Introducer, error) {
 	return in, nil
 }
 
-// IsWrapped reports whether data uses 5A-wrapped records: a leading 0x5A
+// isWrapped reports whether data uses 5A-wrapped records: a leading 0x5A
 // byte, a plausible record length, and the D3 class code where the SFID
 // belongs. Real streams are homogeneous; the framing is detected once from
 // the first record so a naked field with a 0x5Axx length is not misread.
 // SplitFields applies this same check before stripping the one-byte framing
 // marker from each field; callers that need true wire offsets use it to
 // account for the stripped byte.
-func IsWrapped(data []byte) bool {
+func isWrapped(data []byte) bool {
 	if len(data) < 6 || data[0] != 0x5A {
 		return false
 	}
@@ -245,9 +245,9 @@ func fieldsOp(r io.Reader, op string) iter.Seq2[StreamField, error] {
 			return fail(fmt.Errorf("afp: %s: %w", op, err))
 		}
 		// Framing peek: read a prefix once, then apply the existing
-		// IsWrapped predicate to it. The prefix is 1+l bytes (l is the
+		// isWrapped predicate to it. The prefix is 1+l bytes (l is the
 		// big-endian uint16 at [1:3]) when byte 0 is 0x5A and at least
-		// 4 bytes are available, else up to 6 bytes: IsWrapped needs
+		// 4 bytes are available, else up to 6 bytes: isWrapped needs
 		// l <= len-1 with l >= 8, which a fixed 6-byte peek can never
 		// satisfy. The peek only ever holds bytes the stream actually
 		// contains. Streams are homogeneous; the decision is
@@ -257,7 +257,7 @@ func fieldsOp(r io.Reader, op string) iter.Seq2[StreamField, error] {
 			readErr(err)
 			return
 		}
-		wrapped := IsWrapped(prefix)
+		wrapped := isWrapped(prefix)
 		// The prefix bytes are stream bytes; continue reading after them.
 		stream := io.MultiReader(bytes.NewReader(prefix), r)
 		off := 0
@@ -382,7 +382,7 @@ func readPrefix(r io.Reader) ([]byte, error) {
 // bytes (starting at its introducer). It accepts both naked streams and
 // 5A-wrapped variable-blocked records; in wrapped records the 2-byte record
 // length doubles as the field's SFLength, so stripping the 5A byte yields
-// the field. Every field is validated with DecodeIntroducer before its
+// the field. Every field is validated with decodeIntroducer before its
 // bytes are copied, and no allocation is sized by an unvalidated claim.
 //
 // SplitFields is a thin collecting wrapper over the streaming Fields
@@ -403,7 +403,7 @@ func SplitFields(r io.Reader) ([][]byte, error) {
 // checkIntroducer validates a field's introducer, re-basing any error
 // offset to the stream position where the field starts.
 func checkIntroducer(field []byte, fieldStart int) error {
-	if _, err := DecodeIntroducer(field); err != nil {
+	if _, err := decodeIntroducer(field); err != nil {
 		var derr DecodeError
 		if errors.As(err, &derr) {
 			derr.Offset += fieldStart
