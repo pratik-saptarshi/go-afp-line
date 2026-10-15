@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use the superpowers skill `test-driven-development` for every code change and `finishing-a-development-branch` when each phase is complete.
 
-**Goal:** Fix-forward the Round 2 adversarial panel findings on go-afp-line `main` (post-merge of PR #1, merge commit 43f4472). Phase A covers the five ex-merge-blockers; Phase B covers the three next-PR P0s. P1/P2 items are backlog, not planned here.
+**Goal:** Fix-forward the Round 2 adversarial panel findings on go-afp-line `main` (post-merge of PR #1, merge commit 43f4472). Phase A covers the five ex-merge-blockers; Phase B covers the three next-PR P0s; Phase C plans the P1 items as concrete tasks (P2 items are dispositioned as deferred backlog with rationale).
 
 **Architecture:** No new packages. Changes are local to `afptoline` (reducer guards, text budget), `line` (validation bounds), `linetopdf` (test pins only), and docs. The RPS budget is enforced at PTX-append time in the reducer (per-document accounting, error attributed to the offending PTX), which subsumes the panel's "per PTX and per document" ask: no single PTX can exceed the document budget.
 
@@ -23,12 +23,12 @@ Every blocker claim was corroborated against the merged tree before planning:
 
 ## Global Constraints
 
-- Branch: new `fix/panel-round2` from `origin/main` (43f4472) for Phase A. Phase B is a separate PR after Phase A merges.
-- TDD: failing test first for A2, A3, A4, B1, B2. Docs task A1 needs no tests.
+- Branch: new `fix/panel-round2` from `origin/main` (43f4472) for Phase A. Phase B is a separate PR after Phase A merges. Phase C branches `fix/panel-round2-phase-c` from `origin/main` after Phase B merges.
+- TDD: failing test first for A2, A3, A4, B1, B2, and every Phase C code task. Docs task A1 needs no tests.
 - Conventional Commits subjects; no force-push on the branch once published.
 - No absolute local paths or usernames in plans, code, or comments — repo-relative only.
 - Work in an isolated worktree; do not disturb other checkouts.
-- Do not implement P1/P2 items in these phases.
+- Do not implement P1/P2 items in Phases A/B.
 
 ## Review Focus
 
@@ -149,9 +149,200 @@ loop. This amends the interfaces below (supersedes the 2026-10-15 plan rev 1).
 
 ---
 
-## Backlog (not planned — listed for visibility)
+## Phase C — P1 backlog (after Phase B merges)
 
-- **P1 parsing/encoding:** CQ-3 (non-ASCII CHAR re-encode, >8-char names), CQ-7 (5A marker unchecked), CQ-11 (`Triplet.Encode` >253 bytes, stale `Intro.Length`), ARCH-3 (code page 500 unreachable), ARCH-1 (stream input), ARCH-6 (context support).
-- **P1 tests:** RPS/BAG edge cases, generator-vs-fixture byte-compare, reducer/PTOCA error-path coverage, fuzz beyond `afp`, `-shuffle` + coverage floor in CI.
-- **P1 CI/docs:** poppler dependency documented, SHA-pinned actions, `permissions` block + timeouts, push+pull_request double-run fix, remove nested `writerspike` module.
-- **P2:** exported mutable maps, split font tables, dead `MaxFieldSize` check, wide API, inline position, example tests, duplicate package comment, `govulncheck`/Dependabot/`SECURITY.md`/changelog/`.gitignore`, benchmarks.
+Phase C implements the verdict's P1 items in four workstreams: parsing/encoding
+defects (C1–C4), test hardening (C5–C9), CI/docs hygiene (C10–C12), and the
+streaming-input architecture change (C13, sequenced last). All code tasks are
+TDD with independent review, following the Phase A/B discipline. Ship one PR
+per workstream, stacked while predecessors are unmerged.
+
+### Review Focus (Phase C)
+
+The reviewer should attack these inputs specifically:
+
+1. **Encode contract (C2/C3):** one consistent encode-error policy across every `Encode` method — no silent truncation or substitution may remain anywhere.
+2. **C4 default preservation:** `Reduce` must remain byte-identical to `ReduceWithCodePage(37)`; the code page knob must not change default behavior.
+3. **C8 fuzzing:** invariants must hold under `-race`; the seed corpus is committed.
+4. **C13 contract:** the iterator must preserve 5A framing semantics, `MaxFieldSize` checks, and error kinds exactly; reviewer signs off the contract before implementation.
+
+### Task C1: Check the 5A record marker in SplitFields (CQ-7)
+
+**Files:** `afp/sfi.go`, `afp/sfi_test.go`
+
+**Steps:**
+1. Failing test first: a 5A-wrapped stream with a corrupt (non-`0x5A`) record marker byte must fail loudly with `KindStructure` naming the field offset (today the byte is silently skipped by `off++`).
+2. In `SplitFields`, when `wrapped`, verify `data[off] == 0x5A` before stripping; on mismatch return `DecodeError{Kind: KindStructure, Offset: fieldStart, Reason: "expected 5A record marker"}`.
+3. Confirm valid wrapped and naked streams still parse; full checks clean.
+
+**Done when:** a corrupt marker fails loudly; all existing `SplitFields` tests pass unmodified.
+**Commit:** `fix(afp): validate the 5A record marker in SplitFields`
+
+### Task C2: Triplet.Encode overflow + stale Intro.Length (CQ-11)
+
+**Files:** `afp/triplets.go`, `afp/field.go`, tests
+
+**Background / interface decision:** `Triplet.Encode() []byte` cannot return an error, yet silently truncates via `byte(len(t.Data)+2)` when the triplet exceeds the 1-byte length field; `Introducer.Encode()` emits the stored `Length`, which goes stale if field data is mutated post-decode. The implementer chooses the encode-error contract — options: (a) extend `Encode` to return an error across the `Field` interface (breaking; audit every call site), (b) validate at triplet construction and recompute `Intro.Length` from the built bytes inside each `Field.Encode()`. The reviewer must confirm the chosen contract is applied consistently to every `Encode` method; document the decision in the commit message.
+
+**Steps:**
+1. Failing tests: a triplet with `len(Data)+2 > 255` must not silently truncate; a BDT whose triplets changed post-decode must re-encode with a correct length prefix (byte-identical round trip).
+2. Implement per the chosen contract.
+3. Full checks clean.
+
+**Done when:** no silent truncation or stale length survives; round-trip tests pass.
+**Commit:** `fix(afp): fail loudly on triplet overflow; recompute introducer length on encode`
+
+### Task C3: CHAR encode fidelity (CQ-3)
+
+**Files:** `afp/field.go` (`encodeCHAR8`, `decodeCHAR`), tests
+
+**Background / interface decision:** `decodeCHAR` decodes the full EBCDIC-037 table (non-ASCII runes possible), but `encodeCHAR8` silently maps non-ASCII to `0x6F` (`?`) and truncates names over 8 characters — breaking the byte-identical `RoundTrip` gate. Same `Encode() []byte` signature constraint as C2; coordinate the contract decision with C2 so the `afp` package ends up with one consistent encode-error policy. The fail-loud direction is fixed (this repo fails loudly; silent `?` substitution is data corruption) — only the mechanism is open.
+
+**Steps:**
+1. Failing tests: round-trip of a name containing non-ASCII EBCDIC bytes fails loudly instead of substituting `?`; a name longer than 8 chars fails loudly instead of truncating.
+2. Implement per the C2-coordinated contract.
+3. Full checks clean.
+
+**Done when:** CHAR fields round-trip byte-identically or fail loudly; no silent substitution or truncation.
+**Commit:** `fix(afp): CHAR fields fail loudly on non-encodable runes`
+
+### Task C4: Code page 500 reachable from Reduce (ARCH-3)
+
+**Files:** `afptoline/reduce.go`, tests
+
+**Interfaces (final):** add `func ReduceWithCodePage(r io.Reader, cp afp.CodePage) (line.Document, []line.Exclusion, error)`; `Reduce` delegates with `afp.LookupCodePage(37)` (default behavior unchanged). Selecting the *correct* code page from stream metadata (MCF/FQN) is out of scope — this only exposes the knob; say so in the function comment.
+
+**Steps:**
+1. Failing test: decode a PTX through `ReduceWithCodePage` with code page 500 using bytes that differ between 037 and 500 → correct text; `Reduce` output unchanged on the same input.
+2. Implement; full checks clean.
+
+**Done when:** both code pages reachable; the default path is byte-identical to before.
+**Commit:** `feat(afptoline): expose code page selection in Reduce`
+
+### Task C5: RPS and BAG edge cases
+
+**Files:** `afptoline/*_test.go`
+
+**Steps:**
+1. Table tests for: RPS with `RLENGTH == len(RPTDATA)` (transparent-equivalent), `RLENGTH == 0`, RPS at the budget boundary (complements A3 without duplicating it), BAG nested to depth 2, BAG/EAG with an empty group.
+2. Do not duplicate A2/A3 tests — the reviewer checks the new cases against the existing suite first.
+3. Full checks clean.
+
+**Done when:** the edge cases are pinned; no duplication of A2/A3 coverage.
+**Commit:** `test(afptoline): RPS and BAG edge cases`
+
+### Task C6: Generator-vs-fixture byte-compare
+
+**Files:** `afptoline/genfixture` tests (or a new test alongside the fixtures)
+
+**Steps:**
+1. The implementer first checks the fixture generator for nondeterminism (map iteration, timestamps, random IDs).
+2. Add a test that regenerates the fixtures and byte-compares against the committed files; pin or document any nondeterminism found in step 1.
+3. Full checks clean.
+
+**Done when:** the committed fixtures are proven to be generator output, byte-identical.
+**Commit:** `test(afptoline): byte-compare generator output against fixtures`
+
+### Task C7: Reducer and PTOCA error-path coverage
+
+**Files:** `afptoline/reduce_test.go`, `afptoline/ptoca_test.go`
+
+**Steps:**
+1. Enumerate every `st.fail` site in the reducer and every error return in the PTOCA decoder (truncated introducer, invalid length, unknown sequence, unmatched ESU, budget errors, etc.).
+2. Add a failing test per uncovered site, then fill them: each malformed stream must produce the expected `Kind` and naming.
+3. Measure with `go test -cover`; the reviewer verifies the enumeration against the source — no error return left untested.
+
+**Done when:** all documented error paths have tests; the reviewer confirms the enumeration is complete.
+**Commit:** `test(afptoline): cover reducer and PTOCA error paths`
+
+### Task C8: Fuzz targets beyond afp
+
+**Files:** new fuzz tests in `afptoline` (and `line`/`linetopdf` if the implementer finds useful invariants)
+
+**Steps:**
+1. Add `FuzzDecodePTOCA` (invariants: no panic, budget respected, all errors are `afp.DecodeError`) and `FuzzReduce` (invariants: no panic on arbitrary bytes, budget respected), following the existing `FuzzDecodeIntroducer`/`FuzzDecodeField` pattern; seed corpora from existing fixtures.
+2. Run each fuzzer briefly before committing; keep the seed corpus.
+3. Full checks clean.
+
+**Done when:** new fuzz targets exist with committed seed corpora; short fuzz runs clean.
+**Commit:** `test(afptoline): fuzz PTOCA decode and Reduce`
+
+### Task C9: -shuffle and coverage floor in CI
+
+**Files:** `.github/workflows/ci.yml`
+
+**Steps:**
+1. Add `-shuffle=on` to the `go test` invocations.
+2. Add a coverage floor: the implementer measures current total coverage, sets the floor at or below it, and documents the threshold; falling below fails the build.
+3. Full checks clean.
+
+**Done when:** CI runs shuffled; coverage below the floor fails the build.
+**Commit:** `ci: shuffle tests and enforce coverage floor`
+
+### Task C10: CI hygiene — pin, permissions, timeouts, single run
+
+**Files:** `.github/workflows/ci.yml`
+
+**Steps:**
+1. SHA-pin all third-party actions (keep a trailing comment with the human-readable version tag).
+2. Add a top-level least-privilege `permissions:` block and `timeout-minutes` on every job.
+3. Fix the push+pull_request double-run (e.g., `concurrency` cancellation or event conditions — implementer picks the mechanism consistent with the file).
+4. Verify: no floating action refs remain; a push to an open PR triggers exactly one run.
+
+**Done when:** pins, permissions, and timeouts in place; single run per push.
+**Commit:** `ci: pin actions, least-privilege permissions, timeouts, single run`
+
+### Task C11: Document the poppler dependency
+
+**Files:** `README.md` (or the repo-consistent docs location — implementer picks)
+
+**Steps:** document that PDF position tests require `poppler-utils` (`pdftotext`), how CI installs it, and the `CI=true` fail-fast behavior from TEST-1.
+
+**Done when:** a new contributor can satisfy the dependency from the docs alone.
+**Commit:** `docs: document the poppler test dependency`
+
+### Task C12: Remove the nested writerspike module
+
+**Files:** `docs/_evidence/writerspike/`, `docs/writer-spike.md`
+
+**Background / prescription refinement:** the verdict says "remove the nested `writerspike` module", but `docs/writer-spike.md` cites the directory's evidence files (`main.go`, bbox XMLs). Deleting the evidence would contradict the repo's evidence-keeping; the actual hazard is the nested `go.mod` confusing tooling. So: de-modulize rather than delete.
+
+**Steps:**
+1. Confirm nothing builds or references the module (`go build`/`go vet` from the repo root ignore it; grep for imports).
+2. Delete `docs/_evidence/writerspike/go.mod` and `go.sum`; keep the evidence files.
+3. Update `docs/writer-spike.md`'s Method paragraph to no longer list `go.mod`/`go.sum`.
+4. Full checks clean.
+
+**Done when:** no nested module remains; evidence files and doc reference intact.
+**Commit:** `chore: de-modulize docs/_evidence/writerspike`
+
+### Task C13: Stream input instead of io.ReadAll (ARCH-1)
+
+**Files:** `afp/sfi.go` (`SplitFields`), `afptoline/reduce.go`
+
+**Scope note:** architectural change — `SplitFields` returns `[][]byte` after `io.ReadAll`, and `ReduceWithBudget` buffers once more before that. This task converts field splitting to an incremental iterator so unbounded inputs never fully materialize (the A3 budget already bounds per-field expansion; this bounds input retention). **Governance:** scope-expanding — the reviewer must sign off the iterator contract before implementation.
+
+**Steps:**
+1. Design the iterator contract first (options: `iter.Seq2[[]byte, error]`, callback-based, channel-based); reviewer approves before any implementation.
+2. Failing test: a logically large input (a reader yielding many fields without materializing them) reduces under a bounded memory ceiling — assert the ceiling, not an actual huge allocation.
+3. Migrate `ReduceWithBudget` and any other callers to the iterator; keep or remove the old `SplitFields` per reviewer decision.
+4. Full checks clean.
+
+**Done when:** no `io.ReadAll` remains on the input path; memory stays bounded on large inputs per the test.
+**Commit:** `feat(afp): stream structured fields instead of buffering`
+
+---
+
+## Backlog (dispositioned — not planned)
+
+P1 items from the verdict are now Phase C tasks above; what remains below is deferred with rationale. None is worsened by this plan.
+
+- **Exported mutable maps, split font tables, dead `MaxFieldSize` check, wide API (R2P2-F01):** defer — pre-existing API polish; revisit once the API surface stabilizes.
+- **Inline position not advanced after text (R2P2-F02):** defer — deliberate v1 limitation; `DecodePTOCA` documents that per-character advance needs font metrics (original Task 8 design).
+- **Example tests, duplicate package comment in `afptoline` (R2P2-F03):** defer — trivial; bundle into any future test task.
+- **`govulncheck`, Dependabot, `SECURITY.md`, changelog, fuller `.gitignore` (R2P2-F04):** defer — operational workstream, separate from code correctness.
+- **Benchmarks (R2P2-F05):** defer — no performance requirement exists yet; add when optimizing.
+- **Codex PR #3 P2 — rebase non-budget PTOCA decoder offsets to stream offsets (CODEX-F01):** defer — diagnostic-only (fail-loud, correct FieldID); the proper fix threads stream offsets into the decoder error path (introducer length + 5A framing), a contract change across all malformed-input errors. Schedule alongside future decoder error-path work.
+- **ARCH-6 — no context support (R2P1-F06):** defer — flagged during review: adding `context.Context` is a breaking API change across the decode paths with no agreed shape; needs a scoping decision before it can be planned.
+
+The verdict's `## Overruled or downgraded` items (ARCH2-3 refuted, TEST2-1 downgraded, CQ2-3 low, Go 1.27 directive and hardwired Courier left alone) required no plan action and are recorded here for completeness.
