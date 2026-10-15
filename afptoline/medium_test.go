@@ -6,9 +6,9 @@ import "testing"
 // v1 fallback per subset-contract §7 — fixtures carry no AEG/PTD, so every page
 // resolves to it.
 func TestMedium_Geometry(t *testing.T) {
-	w, h := ResolvePageGeometry()
+	w, h := resolvePageGeometry()
 	if w != 612 || h != 792 {
-		t.Fatalf("ResolvePageGeometry() = (%v, %v), want (612, 792)", w, h)
+		t.Fatalf("resolvePageGeometry() = (%v, %v), want (612, 792)", w, h)
 	}
 }
 
@@ -24,8 +24,8 @@ func TestMedium_FlipY(t *testing.T) {
 		{792, 792, 0},
 	}
 	for _, c := range cases {
-		if got := FlipY(c.ptocaY, c.pageH); got != c.want {
-			t.Errorf("FlipY(%v, %v) = %v, want %v", c.ptocaY, c.pageH, got, c.want)
+		if got := flipY(c.ptocaY, c.pageH); got != c.want {
+			t.Errorf("flipY(%v, %v) = %v, want %v", c.ptocaY, c.pageH, got, c.want)
 		}
 	}
 }

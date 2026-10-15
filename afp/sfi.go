@@ -9,11 +9,6 @@ import (
 	"iter"
 )
 
-// MaxFieldSize bounds the claimed length of a single structured field.
-// It is enforced before any allocation based on the claim, so a lying
-// length field can never cause an oversized allocation.
-const MaxFieldSize = 1 << 20 // 1 MiB
-
 // sfiLen is the length of a structured field introducer without extension.
 const sfiLen = 8
 
@@ -73,7 +68,7 @@ func (in Introducer) HasPadding() bool { return in.Flags&flagPad != 0 }
 // Encode serializes the introducer back to its wire bytes.
 // Decode followed by Encode is byte-identical for the introducer.
 func (in Introducer) Encode() []byte {
-	// Mirror DecodeIntroducer's 8..32767 range: a wire-unrepresentable
+	// Mirror decodeIntroducer's 8..32767 range: a wire-unrepresentable
 	// Length can only come from post-decode caller mutation (programmer
 	// error), so fail loudly rather than wrapping the length bytes.
 	if in.Length < sfiLen || in.Length > maxSFLength {
@@ -86,12 +81,12 @@ func (in Introducer) Encode() []byte {
 	return b
 }
 
-// DecodeIntroducer parses the structured field introducer at the start of b.
+// decodeIntroducer parses the structured field introducer at the start of b.
 // b must hold at least the introducer; it may hold more (the field data is
 // not consumed). A claimed length is never trusted for allocation: lengths
-// above MaxFieldSize or the architectural maximum are rejected before any
-// allocation could occur.
-func DecodeIntroducer(b []byte) (Introducer, error) {
+// above the architectural maximum are rejected before any allocation could
+// occur.
+func decodeIntroducer(b []byte) (Introducer, error) {
 	if len(b) < sfiLen {
 		return Introducer{}, DecodeError{
 			Kind:   KindStructure,
@@ -108,14 +103,6 @@ func DecodeIntroducer(b []byte) (Introducer, error) {
 			FieldID: fieldID,
 			Offset:  0,
 			Reason:  fmt.Sprintf("invalid SFLength %d: minimum %d", length, sfiLen),
-		}
-	}
-	if length > MaxFieldSize {
-		return Introducer{}, DecodeError{
-			Kind:    KindStructure,
-			FieldID: fieldID,
-			Offset:  0,
-			Reason:  fmt.Sprintf("SFLength %d exceeds MaxFieldSize %d", length, MaxFieldSize),
 		}
 	}
 	if length > maxSFLength {
@@ -159,14 +146,14 @@ func DecodeIntroducer(b []byte) (Introducer, error) {
 	return in, nil
 }
 
-// IsWrapped reports whether data uses 5A-wrapped records: a leading 0x5A
+// isWrapped reports whether data uses 5A-wrapped records: a leading 0x5A
 // byte, a plausible record length, and the D3 class code where the SFID
 // belongs. Real streams are homogeneous; the framing is detected once from
 // the first record so a naked field with a 0x5Axx length is not misread.
 // SplitFields applies this same check before stripping the one-byte framing
 // marker from each field; callers that need true wire offsets use it to
 // account for the stripped byte.
-func IsWrapped(data []byte) bool {
+func isWrapped(data []byte) bool {
 	if len(data) < 6 || data[0] != 0x5A {
 		return false
 	}
@@ -245,9 +232,9 @@ func fieldsOp(r io.Reader, op string) iter.Seq2[StreamField, error] {
 			return fail(fmt.Errorf("afp: %s: %w", op, err))
 		}
 		// Framing peek: read a prefix once, then apply the existing
-		// IsWrapped predicate to it. The prefix is 1+l bytes (l is the
+		// isWrapped predicate to it. The prefix is 1+l bytes (l is the
 		// big-endian uint16 at [1:3]) when byte 0 is 0x5A and at least
-		// 4 bytes are available, else up to 6 bytes: IsWrapped needs
+		// 4 bytes are available, else up to 6 bytes: isWrapped needs
 		// l <= len-1 with l >= 8, which a fixed 6-byte peek can never
 		// satisfy. The peek only ever holds bytes the stream actually
 		// contains. Streams are homogeneous; the decision is
@@ -257,7 +244,26 @@ func fieldsOp(r io.Reader, op string) iter.Seq2[StreamField, error] {
 			readErr(err)
 			return
 		}
-		wrapped := IsWrapped(prefix)
+		wrapped := isWrapped(prefix)
+		if !wrapped && len(prefix) >= 4 && prefix[0] == 0x5A &&
+			prefix[2] != 0xD3 && prefix[3] == 0xD3 &&
+			int(binary.BigEndian.Uint16(prefix[1:3])) > maxSFLength {
+			// Bound-aware framing fallback: isWrapped needs the full
+			// record, which readPrefix deliberately does not fetch when
+			// the claimed length exceeds the architectural maximum.
+			// A 5A-prefixed record with D3 at [3] (and not at [2], which
+			// would start a naked type triple) is wrapped with an
+			// impossible length; treat it as wrapped so the length bound
+			// check below rejects it instead of misclassifying the
+			// framing and reporting truncation.
+			// Note: prefix[2] == 0xD3 is deliberately excluded. That
+			// input is genuinely ambiguous — it is also a plausible
+			// naked field (length 0x5AXX, type triple at [2:5]) — and
+			// preferring the valid interpretation avoids false
+			// rejections. A short such stream reports truncation, which
+			// is defensible for both readings.
+			wrapped = true
+		}
 		// The prefix bytes are stream bytes; continue reading after them.
 		stream := io.MultiReader(bytes.NewReader(prefix), r)
 		off := 0
@@ -301,17 +307,17 @@ func fieldsOp(r io.Reader, op string) iter.Seq2[StreamField, error] {
 				})
 				return
 			}
-			if flen > MaxFieldSize {
+			if flen > maxSFLength {
 				fail(DecodeError{
 					Kind:   KindStructure,
 					Offset: fieldStart,
-					Reason: fmt.Sprintf("field length %d exceeds MaxFieldSize %d", flen, MaxFieldSize),
+					Reason: fmt.Sprintf("field length %d exceeds MO:DCA maximum %d", flen, maxSFLength),
 				})
 				return
 			}
 			// One ReadFull-equivalent of the whole field: truncation is
 			// discovered here, before introducer validation — today's
-			// order. Allocated only after the MaxFieldSize bound check,
+			// order. Allocated only after the maxSFLength bound check,
 			// so the claim is never trusted for sizing.
 			field := make([]byte, flen)
 			copy(field, two[:])
@@ -354,8 +360,11 @@ func fieldsOp(r io.Reader, op string) iter.Seq2[StreamField, error] {
 
 // readPrefix reads the framing-detection prefix: up to 1+l bytes where l
 // is the big-endian uint16 at [1:3] when byte 0 is 0x5A and at least 4
-// bytes are available, else up to 6 bytes. A short stream yields a short
-// prefix (whatever the stream holds); a read error aborts the prefix.
+// bytes are available, else up to 6 bytes. A claimed length above the
+// architectural maximum is never trusted for sizing the probe: the head
+// is returned as-is and the caller applies a bound-aware framing
+// fallback. A short stream yields a short prefix (whatever the stream
+// holds); a read error aborts the prefix.
 func readPrefix(r io.Reader) ([]byte, error) {
 	var first [4]byte
 	n, err := io.ReadFull(r, first[:])
@@ -365,7 +374,11 @@ func readPrefix(r io.Reader) ([]byte, error) {
 	head := first[:n]
 	want := 6
 	if n >= 4 && head[0] == 0x5A {
-		want = 1 + int(binary.BigEndian.Uint16(head[1:3]))
+		if l := int(binary.BigEndian.Uint16(head[1:3])); l > maxSFLength {
+			return head, nil
+		} else {
+			want = 1 + l
+		}
 	}
 	if len(head) >= want {
 		return head, nil
@@ -382,7 +395,7 @@ func readPrefix(r io.Reader) ([]byte, error) {
 // bytes (starting at its introducer). It accepts both naked streams and
 // 5A-wrapped variable-blocked records; in wrapped records the 2-byte record
 // length doubles as the field's SFLength, so stripping the 5A byte yields
-// the field. Every field is validated with DecodeIntroducer before its
+// the field. Every field is validated with decodeIntroducer before its
 // bytes are copied, and no allocation is sized by an unvalidated claim.
 //
 // SplitFields is a thin collecting wrapper over the streaming Fields
@@ -403,7 +416,7 @@ func SplitFields(r io.Reader) ([][]byte, error) {
 // checkIntroducer validates a field's introducer, re-basing any error
 // offset to the stream position where the field starts.
 func checkIntroducer(field []byte, fieldStart int) error {
-	if _, err := DecodeIntroducer(field); err != nil {
+	if _, err := decodeIntroducer(field); err != nil {
 		var derr DecodeError
 		if errors.As(err, &derr) {
 			derr.Offset += fieldStart

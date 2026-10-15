@@ -24,7 +24,7 @@ import (
 // cannot be represented on the wire: a triplet whose data exceeds the 1-byte
 // Tlength field, a CHAR parameter with a rune that has no EBCDIC-037 mapping
 // or more than 8 characters, or a total length beyond the MO:DCA 32,767-byte
-// maximum. DecodeField and DecodeTriplet validate all of these at
+// maximum. DecodeField and decodeTriplet validate all of these at
 // construction, so a panic only fires on post-decode mutation of a decoded
 // field — a programming error. Decode-side failures stay typed DecodeError
 // returns; panics are encode-side only.
@@ -294,7 +294,7 @@ func buildRegistry() map[[3]byte]fieldSpec {
 // DecodeField decodes exactly one structured field from the start of b.
 // b must hold precisely one field's bytes (as produced by SplitFields);
 // trailing bytes are rejected. The introducer is decoded with
-// DecodeIntroducer, then the type ID is dispatched through the registry:
+// decodeIntroducer, then the type ID is dispatched through the registry:
 //
 //   - in-subset with a typed decoder  -> *BDT, *EDT, *BPG, *EPG
 //   - in-subset, decoder in later task -> *RawField with Excluded=false
@@ -321,7 +321,7 @@ func Acronym(typeID string) (string, bool) {
 }
 
 func DecodeField(b []byte) (Field, error) {
-	in, err := DecodeIntroducer(b)
+	in, err := decodeIntroducer(b)
 	if err != nil {
 		return nil, err
 	}
@@ -363,7 +363,7 @@ func cloneBytes(b []byte) []byte {
 // parseTriplets decodes a field's triplet run, attaching the field's ID and
 // re-basing the error offset to the stream position of the triplet run.
 func parseTriplets(in Introducer, runOffset int, data []byte) (Triplets, error) {
-	ts, err := DecodeTriplets(data)
+	ts, err := decodeTriplets(data)
 	if err != nil {
 		var derr DecodeError
 		if errors.As(err, &derr) {
@@ -464,7 +464,7 @@ func decodeCHAR(b []byte) string {
 func encodeCHAR8(s string) []byte {
 	if n := utf8.RuneCountInString(s); n > 8 {
 		panic(fmt.Sprintf("afp: encodeCHAR8: name %q has %d characters, exceeding CHAR[8]",
-			TruncateEcho(s), n))
+			truncateEcho(s), n))
 	}
 	out := make([]byte, 8)
 	for i := range out {

@@ -12,9 +12,9 @@ import (
 var bdtIntroducer = []byte{0x00, 0x11, 0xD3, 0xA8, 0xA8, 0x00, 0x00, 0x00}
 
 func TestDecodeIntroducer_BDT(t *testing.T) {
-	in, err := DecodeIntroducer(bdtIntroducer)
+	in, err := decodeIntroducer(bdtIntroducer)
 	if err != nil {
-		t.Fatalf("DecodeIntroducer: unexpected error: %v", err)
+		t.Fatalf("decodeIntroducer: unexpected error: %v", err)
 	}
 	if in.Length != 17 {
 		t.Errorf("Length = %d, want 17", in.Length)
@@ -31,7 +31,7 @@ func TestDecodeIntroducer_BDT(t *testing.T) {
 }
 
 func TestDecodeIntroducer_Truncated(t *testing.T) {
-	_, err := DecodeIntroducer([]byte{0x00, 0x11, 0xD3})
+	_, err := decodeIntroducer([]byte{0x00, 0x11, 0xD3})
 	var derr DecodeError
 	if !errors.As(err, &derr) {
 		t.Fatalf("expected DecodeError, got %T (%v)", err, err)
@@ -49,16 +49,16 @@ func TestIntroducer_RoundTrip(t *testing.T) {
 		{0x00, 0x12, 0xD3, 0xA8, 0xA8, 0x80, 0x00, 0x00, 0x02, 0x00},
 	}
 	for _, b := range vectors {
-		in, err := DecodeIntroducer(b)
+		in, err := decodeIntroducer(b)
 		if err != nil {
-			t.Fatalf("DecodeIntroducer(% x): unexpected error: %v", b, err)
+			t.Fatalf("decodeIntroducer(% x): unexpected error: %v", b, err)
 		}
 		if got := in.Encode(); !bytes.Equal(got, b) {
 			t.Errorf("Encode(Decode(% x)) = % x, want % x", b, got, b)
 		}
 	}
 	// The extension vector must actually have parsed an extension.
-	in, _ := DecodeIntroducer(vectors[1])
+	in, _ := decodeIntroducer(vectors[1])
 	if !in.HasExtension() {
 		t.Errorf("HasExtension = false for flags 0x80, want true")
 	}
@@ -114,7 +114,7 @@ func TestDecodeIntroducer_LyingLength(t *testing.T) {
 	// allocates or indexes by the claimed length would panic or OOM here;
 	// returning DecodeError on this input proves the claim is never trusted.
 	b := []byte{0xFF, 0xFF, 0xFF, 0xD3, 0xA8, 0xA8, 0x00, 0x00}
-	_, err := DecodeIntroducer(b)
+	_, err := decodeIntroducer(b)
 	var derr DecodeError
 	if !errors.As(err, &derr) {
 		t.Fatalf("expected DecodeError, got %T (%v)", err, err)
@@ -152,19 +152,13 @@ func TestSplitFields_Empty(t *testing.T) {
 	}
 }
 
-func TestMaxFieldSize(t *testing.T) {
-	if MaxFieldSize != 1<<20 {
-		t.Errorf("MaxFieldSize = %d, want %d", MaxFieldSize, 1<<20)
-	}
-}
-
 func FuzzDecodeIntroducer(f *testing.F) {
 	f.Add(bdtIntroducer)
 	f.Add([]byte{})
 	f.Add([]byte{0x00})
 	f.Add([]byte{0x00, 0x12, 0xD3, 0xA8, 0xA8, 0x80, 0x00, 0x00, 0x02, 0x00})
 	f.Fuzz(func(t *testing.T, b []byte) {
-		in, err := DecodeIntroducer(b)
+		in, err := decodeIntroducer(b)
 		if err != nil {
 			// Every failure must be a typed DecodeError, never a panic
 			// and never an untyped error.
@@ -243,7 +237,7 @@ func TestSplitFields_ValidMarkersStillParse(t *testing.T) {
 }
 
 // TestIntroducerEncode_RangePanics: Encode must fail loudly (not wrap) on
-// wire-unrepresentable Length, mirroring DecodeIntroducer's 8..32767 range.
+// wire-unrepresentable Length, mirroring decodeIntroducer's 8..32767 range.
 func TestIntroducerEncode_RangePanics(t *testing.T) {
 	base := Introducer{TypeID: [3]byte{0xD3, 0xA8, 0xA8}}
 	for _, length := range []int{0, 7, 32768, 70000} {
