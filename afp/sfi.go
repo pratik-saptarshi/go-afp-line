@@ -1,10 +1,12 @@
 package afp
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 )
 
 // MaxFieldSize bounds the claimed length of a single structured field.
@@ -172,63 +174,189 @@ func IsWrapped(data []byte) bool {
 	return l >= sfiLen && l <= len(data)-1 && data[3] == 0xD3
 }
 
+// StreamField is one structured field yielded by Fields.
+type StreamField struct {
+	// Data holds the complete field bytes starting at the introducer
+	// (the 5A record marker is stripped on wrapped streams). The buffer
+	// is freshly allocated per field and owned by the caller; the
+	// iterator never reuses it. len(Data) always equals the validated
+	// SFLength.
+	Data []byte
+	// Offset is the wire offset of the field's first wire byte: the 5A
+	// marker on wrapped streams, the introducer otherwise.
+	Offset int
+}
+
+// Fields returns an iterator over the structured fields of a MO:DCA
+// stream, read incrementally: at most one field (plus a small framing
+// prefix) is retained at a time. It accepts naked and 5A-wrapped streams,
+// exactly like SplitFields, and yields the same fields with the same wire
+// offsets and the same error contract (Kind/Reason/Offset per field).
+//
+// The sequence is single-use: it reads from r as it is iterated, so
+// iterating it twice is undefined. If the consumer stops early (break or
+// return), the iterator stops reading promptly and holds no resources:
+// there are no goroutines or channels, so nothing can leak.
+func Fields(r io.Reader) iter.Seq2[StreamField, error] {
+	return fieldsOp(r, "Fields")
+}
+
+// fieldsOp is the shared iterator core behind Fields and SplitFields; op
+// names the operation in read-error wrappers.
+func fieldsOp(r io.Reader, op string) iter.Seq2[StreamField, error] {
+	return func(yield func(StreamField, error) bool) {
+		fail := func(err error) bool {
+			return yield(StreamField{}, err)
+		}
+		readErr := func(err error) bool {
+			return fail(fmt.Errorf("afp: %s: %w", op, err))
+		}
+		// Framing peek: read a prefix once, then apply the existing
+		// IsWrapped predicate to it. The prefix is 1+l bytes (l is the
+		// big-endian uint16 at [1:3]) when byte 0 is 0x5A and at least
+		// 4 bytes are available, else up to 6 bytes: IsWrapped needs
+		// l <= len-1 with l >= 8, which a fixed 6-byte peek can never
+		// satisfy. The peek only ever holds bytes the stream actually
+		// contains. Streams are homogeneous; the decision is
+		// stream-global.
+		prefix, err := readPrefix(r)
+		if err != nil {
+			readErr(err)
+			return
+		}
+		wrapped := IsWrapped(prefix)
+		// The prefix bytes are stream bytes; continue reading after them.
+		stream := io.MultiReader(bytes.NewReader(prefix), r)
+		off := 0
+		var one, two [2]byte
+		for {
+			fieldStart := off
+			if wrapped {
+				// Verify the 5A record marker before stripping it: a
+				// corrupt marker is stream damage, not a byte to skip
+				// silently.
+				if _, err := io.ReadFull(stream, one[:1]); err != nil {
+					if err == io.EOF {
+						return // clean end: nothing after the last field
+					}
+					readErr(err)
+					return
+				}
+				if one[0] != 0x5A {
+					fail(DecodeError{Kind: KindStructure, Offset: fieldStart, Reason: "expected 5A record marker"})
+					return
+				}
+				off++ // strip the 5A marker; the record length is the SFLength
+			}
+			if _, err := io.ReadFull(stream, two[:]); err != nil {
+				if err == io.EOF && !wrapped {
+					return // clean end exactly at a field boundary
+				}
+				if err == io.EOF || err == io.ErrUnexpectedEOF {
+					fail(DecodeError{Offset: fieldStart, Kind: KindStructure, Reason: "truncated field length"})
+					return
+				}
+				readErr(err)
+				return
+			}
+			flen := int(binary.BigEndian.Uint16(two[:]))
+			if flen < sfiLen {
+				fail(DecodeError{
+					Kind:   KindStructure,
+					Offset: fieldStart,
+					Reason: fmt.Sprintf("invalid field length %d: minimum %d", flen, sfiLen),
+				})
+				return
+			}
+			if flen > MaxFieldSize {
+				fail(DecodeError{
+					Kind:   KindStructure,
+					Offset: fieldStart,
+					Reason: fmt.Sprintf("field length %d exceeds MaxFieldSize %d", flen, MaxFieldSize),
+				})
+				return
+			}
+			// One ReadFull-equivalent of the whole field: truncation is
+			// discovered here, before introducer validation — today's
+			// order. Allocated only after the MaxFieldSize bound check,
+			// so the claim is never trusted for sizing.
+			field := make([]byte, flen)
+			copy(field, two[:])
+			// have counts from the introducer, excluding the 5A marker:
+			// today's post-strip len(data)-off.
+			have := 2
+			for have < flen {
+				m, rerr := stream.Read(field[have:flen])
+				have += m
+				if rerr != nil {
+					if rerr == io.EOF {
+						fail(DecodeError{
+							Kind:   KindStructure,
+							Offset: fieldStart,
+							Reason: fmt.Sprintf("truncated field: need %d bytes, have %d", flen, have),
+						})
+					} else {
+						readErr(rerr)
+					}
+					return
+				}
+			}
+			if derr := checkIntroducer(field, fieldStart); derr != nil {
+				fail(derr)
+				return
+			}
+			off += flen
+			if !yield(StreamField{Data: field, Offset: fieldStart}, nil) {
+				return // consumer stopped early: stop reading promptly
+			}
+		}
+	}
+}
+
+// readPrefix reads the framing-detection prefix: up to 1+l bytes where l
+// is the big-endian uint16 at [1:3] when byte 0 is 0x5A and at least 4
+// bytes are available, else up to 6 bytes. A short stream yields a short
+// prefix (whatever the stream holds); a read error aborts the prefix.
+func readPrefix(r io.Reader) ([]byte, error) {
+	var first [4]byte
+	n, err := io.ReadFull(r, first[:])
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return nil, err
+	}
+	head := first[:n]
+	want := 6
+	if n >= 4 && head[0] == 0x5A {
+		want = 1 + int(binary.BigEndian.Uint16(head[1:3]))
+	}
+	if len(head) >= want {
+		return head, nil
+	}
+	rest := make([]byte, want-len(head))
+	m, err := io.ReadFull(r, rest)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return nil, err
+	}
+	return append(head, rest[:m]...), nil
+}
+
 // SplitFields reads a MO:DCA stream and returns each structured field's raw
 // bytes (starting at its introducer). It accepts both naked streams and
 // 5A-wrapped variable-blocked records; in wrapped records the 2-byte record
 // length doubles as the field's SFLength, so stripping the 5A byte yields
 // the field. Every field is validated with DecodeIntroducer before its
 // bytes are copied, and no allocation is sized by an unvalidated claim.
+//
+// SplitFields is a thin collecting wrapper over the streaming Fields
+// iterator, so it keeps this exact contract — including the
+// "afp: SplitFields: %w" read-error text. On huge inputs it materializes
+// every field; Fields is the streaming path.
 func SplitFields(r io.Reader) ([][]byte, error) {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return nil, fmt.Errorf("afp: SplitFields: %w", err)
-	}
-	wrapped := IsWrapped(data)
 	var fields [][]byte
-	off := 0
-	for off < len(data) {
-		fieldStart := off
-		if wrapped {
-			// Verify the 5A record marker before stripping it: a corrupt
-			// marker is stream damage, not a byte to skip silently.
-			if data[off] != 0x5A {
-				return nil, DecodeError{Kind: KindStructure, Offset: fieldStart, Reason: "expected 5A record marker"}
-			}
-			off++ // strip the 5A marker; the record length is the SFLength
+	for f, err := range fieldsOp(r, "SplitFields") {
+		if err != nil {
+			return nil, err
 		}
-		if len(data)-off < 2 {
-			return nil, DecodeError{Offset: fieldStart, Kind: KindStructure, Reason: "truncated field length"}
-		}
-		flen := int(binary.BigEndian.Uint16(data[off : off+2]))
-		if flen < sfiLen {
-			return nil, DecodeError{
-				Kind:   KindStructure,
-				Offset: fieldStart,
-				Reason: fmt.Sprintf("invalid field length %d: minimum %d", flen, sfiLen),
-			}
-		}
-		if flen > MaxFieldSize {
-			return nil, DecodeError{
-				Kind:   KindStructure,
-				Offset: fieldStart,
-				Reason: fmt.Sprintf("field length %d exceeds MaxFieldSize %d", flen, MaxFieldSize),
-			}
-		}
-		if len(data)-off < flen {
-			return nil, DecodeError{
-				Kind:   KindStructure,
-				Offset: fieldStart,
-				Reason: fmt.Sprintf("truncated field: need %d bytes, have %d", flen, len(data)-off),
-			}
-		}
-		field := data[off : off+flen]
-		if derr := checkIntroducer(field, fieldStart); derr != nil {
-			return nil, derr
-		}
-		cp := make([]byte, flen)
-		copy(cp, field)
-		fields = append(fields, cp)
-		off += flen
+		fields = append(fields, f.Data)
 	}
 	return fields, nil
 }

@@ -835,9 +835,9 @@ func TestReduce_BAGEdgeCases(t *testing.T) {
 	}
 }
 
-// TestReduceWithBudget_ReadError: a failing reader surfaces as the "read
-// input" wrapper — the first error return in the reduce pipeline, and it is
-// not an afp.DecodeError (no field was decoded).
+// TestReduceWithBudget_ReadError: a failing reader surfaces as the "afp:
+// Fields" wrapper — the first error return in the reduce pipeline, and it
+// is not an afp.DecodeError (no field was decoded).
 func TestReduceWithBudget_ReadError(t *testing.T) {
 	_, _, err := ReduceWithBudget(errReader{}, 4096)
 	if err == nil {
@@ -847,8 +847,8 @@ func TestReduceWithBudget_ReadError(t *testing.T) {
 	if errors.As(err, &derr) {
 		t.Fatalf("error = %v: a read failure is not a DecodeError", err)
 	}
-	if !strings.Contains(err.Error(), "read input") {
-		t.Errorf("error = %q, want it to contain %q", err.Error(), "read input")
+	if !strings.Contains(err.Error(), "afp: Fields:") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "afp: Fields:")
 	}
 }
 
@@ -884,6 +884,34 @@ func TestReduce_Corrupt5AMarker(t *testing.T) {
 	}
 	if want := (1 + len(bdt)) + (1 + len(bpg)); derr.Offset != want {
 		t.Errorf("Offset = %d, want %d (start of the damaged record)", derr.Offset, want)
+	}
+}
+
+// TestReduce_FinishOffset_WrappedStream: end of stream with an open page on
+// a 5A-wrapped stream must report the true wire end, counting every record
+// marker — the streaming reducer derives the per-record marker from the
+// gap between consecutive field offsets.
+func TestReduce_FinishOffset_WrappedStream(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+
+	var buf bytes.Buffer
+	buf.WriteByte(0x5A)
+	buf.Write(bdt)
+	buf.WriteByte(0x5A)
+	buf.Write(bpg)
+	// No EPG: the stream ends with the page open.
+
+	_, _, err := Reduce(&buf)
+	if err == nil {
+		t.Fatal("Reduce accepted a stream ending with an open page")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+	}
+	if want := (1 + len(bdt)) + (1 + len(bpg)); derr.Offset != want {
+		t.Errorf("Offset = %d, want %d (end-of-stream wire offset)", derr.Offset, want)
 	}
 }
 

@@ -1,7 +1,9 @@
-# C13 iterator contract — design (pending reviewer sign-off)
+# C13 iterator contract — design (APPROVED, implemented)
 
 **Task:** C13 — stream input instead of `io.ReadAll` (ARCH-1).
-**Status:** DESIGN — no implementation. Reviewer sign-off required before any code.
+**Status:** APPROVED by independent contract review (two rounds); implementation
+complete on branch `fix/panel-round2-phase-c4` as `feat(afp): stream structured
+fields instead of buffering`.
 **Scope:** `afp/sfi.go` (`SplitFields`), `afptoline/reduce.go` (`ReduceWithBudget`),
 `afp/triplets.go` (`RoundTrip`).
 

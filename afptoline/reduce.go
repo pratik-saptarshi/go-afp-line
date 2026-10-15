@@ -2,7 +2,6 @@
 package afptoline
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -84,39 +83,45 @@ func reduceWithBudgetAndCodePage(r io.Reader, maxTextBytes int, cp afp.CodePage)
 	if maxTextBytes <= 0 {
 		return line.Document{}, nil, fmt.Errorf("afptoline: non-positive text budget %d", maxTextBytes)
 	}
-	// Buffer the input once: SplitFields re-reads it, and the 5A-wrapped
-	// framing check below needs the raw stream start.
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return line.Document{}, nil, fmt.Errorf("afptoline: read input: %w", err)
-	}
-	wrapped := afp.IsWrapped(data)
-	raws, err := afp.SplitFields(bytes.NewReader(data))
-	if err != nil {
-		return line.Document{}, nil, err
-	}
-
 	st := &reduceState{cp: cp, textLeft: maxTextBytes}
-	for _, raw := range raws {
-		f, err := afp.DecodeField(raw)
+	// Track the wire offset just past the last visited record, for
+	// finish() errors ("end of stream with ... open"): the old code
+	// advanced st.off past each field including the 5A record marker. The
+	// per-record marker (1 on wrapped streams, 0 on naked) is the gap
+	// between consecutive field offsets — streams are homogeneous, so one
+	// gap suffices. With fewer than two fields no gap is observable and 0
+	// is assumed, which is exact except for a single-field wrapped stream
+	// (its leading marker is invisible in the offsets).
+	prevDataEnd, marker := 0, 0
+	seen := false
+	for sf, err := range afp.Fields(r) {
+		if err != nil {
+			return line.Document{}, nil, err
+		}
+		if seen {
+			marker = sf.Offset - prevDataEnd
+		}
+		// st.off is the true wire offset of the field under visit, so
+		// errors raised during visit carry the field's start offset,
+		// matching DecodeError.Offset's documented meaning ("where
+		// decoding failed"). Each Fields entry is the complete encoded
+		// field (starting at its introducer); sf.Offset already counts
+		// the stripped 5A record marker on wrapped streams.
+		st.off = sf.Offset
+		f, err := afp.DecodeField(sf.Data)
 		if err != nil {
 			return line.Document{}, st.excls, err
 		}
 		if err := st.visit(f); err != nil {
 			return line.Document{}, st.excls, err
 		}
-		// Advance past the field after visiting, so errors raised during
-		// visit see st.off as the field's start offset, matching
-		// DecodeError.Offset's documented meaning ("where decoding
-		// failed"). Each SplitFields entry is the complete encoded field
-		// (starting at its introducer). On 5A-wrapped streams SplitFields
-		// strips the one-byte record marker, so add it back: st.off must
-		// be the true wire offset, not the stripped length.
-		st.off += len(raw)
-		if wrapped {
-			st.off++
-		}
+		prevDataEnd = sf.Offset + len(sf.Data)
+		seen = true
 	}
+	// After the loop st.off is the end-of-stream wire offset, so finish()
+	// errors ("end of stream with ... open") report where the stream
+	// ended, exactly as the old accumulate-and-add-one logic did.
+	st.off = prevDataEnd + marker
 	if err := st.finish(); err != nil {
 		return line.Document{}, st.excls, err
 	}
