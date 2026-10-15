@@ -183,6 +183,11 @@ func SplitFields(r io.Reader) ([][]byte, error) {
 	for off < len(data) {
 		fieldStart := off
 		if wrapped {
+			// Verify the 5A record marker before stripping it: a corrupt
+			// marker is stream damage, not a byte to skip silently.
+			if data[off] != 0x5A {
+				return nil, DecodeError{Kind: KindStructure, Offset: fieldStart, Reason: "expected 5A record marker"}
+			}
 			off++ // strip the 5A marker; the record length is the SFLength
 		}
 		if len(data)-off < 2 {
