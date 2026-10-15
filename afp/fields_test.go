@@ -175,34 +175,45 @@ func (r *lazyFieldReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-func heapGrowth(t *testing.T, before runtime.MemStats) uint64 {
-	t.Helper()
-	var after runtime.MemStats
-	runtime.GC()
-	runtime.GC()
-	runtime.ReadMemStats(&after)
-	if after.HeapAlloc < before.HeapAlloc {
-		return 0
+// peakHeapReader wraps r and records the maximum HeapAlloc observed *while*
+// reads are in flight. Sampling during iteration is what makes the ceiling
+// meaningful: a buffering implementation retains every field, so its live
+// set (which no GC can reclaim) trips the ceiling mid-iteration, while a
+// buffer released when the iterator returns would be reclaimed by a
+// post-iteration GC and escape a before/after measurement.
+type peakHeapReader struct {
+	r     io.Reader
+	peak  uint64
+	reads int
+}
+
+func (p *peakHeapReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	p.reads++
+	if p.reads%4096 == 0 {
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		if ms.HeapAlloc > p.peak {
+			p.peak = ms.HeapAlloc
+		}
 	}
-	return after.HeapAlloc - before.HeapAlloc
+	return n, err
 }
 
 // TestFields_BoundedMemory: 2M minimal 8-byte naked fields = 16 MiB of
-// logical field data. The old io.ReadAll + [][]byte shape would retain
-// ~64 MiB (2M 24-byte slice headers + 16 MiB data), so a 16 MiB ceiling
-// fails such a regression while the streaming iterator stays near zero.
+// logical field data. The streaming iterator retains one field at a time
+// (live set ~KBs); the old io.ReadAll + [][]byte shape would retain ~64
+// MiB (2M 24-byte slice headers + 16 MiB data) live mid-iteration, tripping
+// the 16 MiB ceiling.
 func TestFields_BoundedMemory(t *testing.T) {
 	field := []byte{0x00, 0x08, 0xD3, 0xA8, 0xAD, 0x00, 0x00, 0x00} // minimal BNG
 	const nFields = 2_000_000
 	const ceiling = 16 << 20
 
-	var before runtime.MemStats
-	runtime.GC()
-	runtime.GC()
-	runtime.ReadMemStats(&before)
-
+	runtime.GC() // start clean so samples reflect the iteration
+	pr := &peakHeapReader{r: newLazyFieldReader(field, nFields)}
 	count := 0
-	for f, err := range Fields(newLazyFieldReader(field, nFields)) {
+	for f, err := range Fields(pr) {
 		if err != nil {
 			t.Fatalf("Fields: unexpected error at field %d: %v", count, err)
 		}
@@ -217,8 +228,8 @@ func TestFields_BoundedMemory(t *testing.T) {
 	if count != nFields {
 		t.Fatalf("iterated %d fields, want %d", count, nFields)
 	}
-	if growth := heapGrowth(t, before); growth > ceiling {
-		t.Errorf("heap grew by %d bytes over %d streamed fields, want < %d", growth, nFields, ceiling)
+	if pr.peak > ceiling {
+		t.Errorf("peak heap %d bytes while streaming %d fields, want < %d", pr.peak, nFields, ceiling)
 	}
 }
 
@@ -231,15 +242,111 @@ func TestRoundTrip_BoundedMemory(t *testing.T) {
 	const nFields = 2_000_000
 	const ceiling = 16 << 20
 
-	var before runtime.MemStats
-	runtime.GC()
-	runtime.GC()
-	runtime.ReadMemStats(&before)
-
-	if err := RoundTrip(newLazyFieldReader(field, nFields)); err != nil {
+	runtime.GC() // start clean so samples reflect the iteration
+	pr := &peakHeapReader{r: newLazyFieldReader(field, nFields)}
+	if err := RoundTrip(pr); err != nil {
 		t.Fatalf("RoundTrip(lazy stream): unexpected error: %v", err)
 	}
-	if growth := heapGrowth(t, before); growth > ceiling {
-		t.Errorf("heap grew by %d bytes over %d streamed fields, want < %d", growth, nFields, ceiling)
+	if pr.peak > ceiling {
+		t.Errorf("peak heap %d bytes while streaming %d fields, want < %d", pr.peak, nFields, ceiling)
+	}
+}
+
+// errWithBytesReader models readers (e.g. checksum-validating) that return
+// a non-EOF error together with bytes, which io.Reader permits: the first
+// Read returns len(p) bytes and err, subsequent Reads return EOF.
+type errWithBytesReader struct {
+	data []byte
+	err  error
+	done bool
+}
+
+func (r *errWithBytesReader) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, io.EOF
+	}
+	r.done = true
+	return copy(p, r.data), r.err
+}
+
+// TestFields_ErrorWithPrefixBytes: an error arriving with the framing
+// prefix bytes must surface (wrapped, not a DecodeError) instead of being
+// swallowed by the prefix read. io.ReadFull discards an error that arrives
+// with a full buffer; the old io.ReadAll path surfaced it.
+func TestFields_ErrorWithPrefixBytes(t *testing.T) {
+	field := []byte{0x00, 0x08, 0xD3, 0xA8, 0xAD, 0x00, 0x00, 0x00} // minimal BNG
+	boom := errors.New("boom")
+	var nFields int
+	var gotErr error
+	for f, err := range Fields(&errWithBytesReader{data: field, err: boom}) {
+		if err != nil {
+			gotErr = err
+			continue
+		}
+		nFields++
+		_ = f
+	}
+	if nFields != 0 {
+		t.Errorf("Fields yielded %d fields before the read error, want 0", nFields)
+	}
+	if gotErr == nil || !errors.Is(gotErr, boom) {
+		t.Fatalf("Fields error = %v, want wrapped boom", gotErr)
+	}
+	var derr DecodeError
+	if errors.As(gotErr, &derr) {
+		t.Errorf("Fields error = DecodeError %+v, want a plain read error", derr)
+	}
+}
+
+// scriptedErrReader serves clean full reads until limit bytes, then returns
+// err together with the next chunk's bytes: the bytes must be processed
+// first (a complete field is yielded) and the error surfaces afterwards,
+// per the io.Reader contract.
+type scriptedErrReader struct {
+	data  []byte
+	off   int
+	limit int
+	err   error
+}
+
+func (r *scriptedErrReader) Read(p []byte) (int, error) {
+	if r.off >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[r.off:])
+	r.off += n
+	if r.off >= r.limit {
+		return n, r.err
+	}
+	return n, nil
+}
+
+// TestFields_ErrorAfterCompleteField: when a non-EOF error arrives with a
+// chunk that completes a field, the field is yielded first and the error
+// surfaces on the next step — bytes are processed before the error is
+// considered. Without the staging, the error would be silently dropped and
+// iteration would end cleanly.
+func TestFields_ErrorAfterCompleteField(t *testing.T) {
+	field := []byte{0x00, 0x08, 0xD3, 0xA8, 0xAD, 0x00, 0x00, 0x00} // minimal BNG
+	stream := append(append([]byte{}, field...), field...)
+	boom := errors.New("boom")
+	// Clean reads through the first field (8 bytes); the error arrives
+	// with the second field's bytes.
+	r := &scriptedErrReader{data: stream, limit: 8, err: boom}
+
+	var fields [][]byte
+	var gotErr error
+	for f, err := range Fields(r) {
+		if err != nil {
+			gotErr = err
+			continue
+		}
+		fields = append(fields, f.Data)
+	}
+	if len(fields) != 1 || !bytes.Equal(fields[0], field) {
+		t.Fatalf("Fields yielded %d fields, want the 1 complete field before the error", len(fields))
+	}
+	if gotErr == nil || !errors.Is(gotErr, boom) {
+		t.Fatalf("Fields error = %v, want wrapped boom after the complete field", gotErr)
 	}
 }

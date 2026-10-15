@@ -201,10 +201,43 @@ func Fields(r io.Reader) iter.Seq2[StreamField, error] {
 	return fieldsOp(r, "Fields")
 }
 
+// pendingErrReader wraps an io.Reader so a non-EOF error returned alongside
+// bytes is never silently lost. The io.Reader contract requires callers to
+// process n > 0 bytes before considering err, but io.ReadFull discards an
+// error that arrives with a full buffer — silently accepting input the old
+// io.ReadAll path would have rejected (a reader may legally return a full
+// buffer together with a non-EOF error, e.g. a checksum-validating reader
+// delivering final bytes with its checksum error). This wrapper stages such
+// an error and replays it (with n == 0) on the next Read, after the bytes
+// have been processed. io.EOF is never staged: it is part of normal framing
+// and ReadFull already handles (n > 0, EOF) by continuing.
+type pendingErrReader struct {
+	r       io.Reader
+	pending error
+}
+
+func (e *pendingErrReader) Read(p []byte) (int, error) {
+	if e.pending != nil {
+		err := e.pending
+		e.pending = nil
+		return 0, err
+	}
+	n, err := e.r.Read(p)
+	if n > 0 && err != nil && err != io.EOF {
+		e.pending = err
+		return n, nil
+	}
+	return n, err
+}
+
 // fieldsOp is the shared iterator core behind Fields and SplitFields; op
 // names the operation in read-error wrappers.
 func fieldsOp(r io.Reader, op string) iter.Seq2[StreamField, error] {
 	return func(yield func(StreamField, error) bool) {
+		// Stage errors that arrive with bytes (see pendingErrReader) so
+		// every read site below — prefix, marker, length, body — surfaces
+		// them after the accompanying bytes are processed.
+		r = &pendingErrReader{r: r}
 		fail := func(err error) bool {
 			return yield(StreamField{}, err)
 		}
