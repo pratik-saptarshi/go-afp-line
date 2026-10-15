@@ -219,6 +219,12 @@ func TestEncodeText_Unmappable(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "\U0001D11E") {
 		t.Errorf("error should name the offending character, got: %v", err)
 	}
+	// Invalid UTF-8 decodes to U+FFFD, which has no Windows-1252 mapping.
+	if _, err := encodeText("\xff\xfe"); err == nil {
+		t.Fatal("expected error for invalid UTF-8, got nil")
+	} else if !strings.Contains(err.Error(), "�") { // U+FFFD
+		t.Errorf("error should name the offending character, got: %v", err)
+	}
 }
 
 func TestEncodeText_WinAnsiSpecials(t *testing.T) {
