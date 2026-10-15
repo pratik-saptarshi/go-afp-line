@@ -147,16 +147,16 @@ func DecodeTriplets(b []byte) (Triplets, error) {
 // Encode serializes the triplet back to its wire bytes.
 //
 // The Tlength byte is recomputed from the data on every call. A triplet
-// whose data does not fit the 1-byte length field (len(Data)+2 > 255)
-// cannot be represented on the wire: Encode panics loudly rather than
-// silently truncating the length byte (data corruption). DecodeTriplet
-// rejects Tlength > 254 at construction, so this only fires when a decoded
-// triplet is mutated into an unrepresentable state — a programming error.
+// whose data does not fit the architectural maximum (len(Data)+2 > 254)
+// cannot be decoded back — DecodeTriplet rejects Tlength > 254 — so Encode
+// panics loudly rather than emitting a triplet its own decoder rejects.
+// This only fires when a decoded triplet is mutated into an unrepresentable
+// state: a programming error.
 func (t Triplet) Encode() []byte {
 	n := len(t.Data) + 2
-	if n > 255 {
-		panic(fmt.Sprintf("afp: Triplet.Encode: Tlength %d exceeds the 1-byte length field (triplet X'%02X carries %d data bytes)",
-			n, t.ID, len(t.Data)))
+	if n > maxTripletLen {
+		panic(fmt.Sprintf("afp: Triplet.Encode: Tlength %d exceeds the architectural maximum %d (triplet X'%02X carries %d data bytes)",
+			n, maxTripletLen, t.ID, len(t.Data)))
 	}
 	b := make([]byte, 0, n)
 	b = append(b, byte(n), t.ID)

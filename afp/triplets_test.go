@@ -155,15 +155,25 @@ func TestTriplet_EncodeOverflowPanics(t *testing.T) {
 	})
 }
 
-func TestTriplet_EncodeMaxTlength(t *testing.T) {
-	// Boundary: len(Data)+2 = 255 fits the 1-byte Tlength field exactly.
+func TestTriplet_EncodeAboveArchitecturalMaxPanics(t *testing.T) {
+	// len(Data)+2 = 255 fits the 1-byte field but exceeds the architectural
+	// maximum (254) that DecodeTriplet enforces: Encode must refuse to emit
+	// a triplet its own decoder rejects.
 	tr := Triplet{ID: 0x65, Data: bytes.Repeat([]byte{0xC8}, 253)}
+	assertPanics(t, "Triplet.Encode with len(Data)+2 = 255 > maxTripletLen", func() {
+		tr.Encode()
+	})
+}
+
+func TestTriplet_EncodeMaxTlength(t *testing.T) {
+	// Boundary: len(Data)+2 = 254 is the architectural maximum Tlength.
+	tr := Triplet{ID: 0x65, Data: bytes.Repeat([]byte{0xC8}, 252)}
 	enc := tr.Encode()
-	if len(enc) != 255 {
-		t.Fatalf("len(Encode()) = %d, want 255", len(enc))
+	if len(enc) != 254 {
+		t.Fatalf("len(Encode()) = %d, want 254", len(enc))
 	}
-	if enc[0] != 0xFF {
-		t.Errorf("Tlength byte = 0x%02X, want 0xFF", enc[0])
+	if enc[0] != 0xFE {
+		t.Errorf("Tlength byte = 0x%02X, want 0xFE", enc[0])
 	}
 	if enc[1] != 0x65 {
 		t.Errorf("Tid byte = 0x%02X, want 0x65", enc[1])
