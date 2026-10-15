@@ -152,12 +152,6 @@ func TestSplitFields_Empty(t *testing.T) {
 	}
 }
 
-func TestMaxFieldSize(t *testing.T) {
-	if MaxFieldSize != 1<<20 {
-		t.Errorf("MaxFieldSize = %d, want %d", MaxFieldSize, 1<<20)
-	}
-}
-
 func FuzzDecodeIntroducer(f *testing.F) {
 	f.Add(bdtIntroducer)
 	f.Add([]byte{})

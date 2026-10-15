@@ -93,8 +93,10 @@ streams (captured before stripping), matching today's `fieldStart := off`.
    `DecodeError{Offset: fieldStart, Kind: KindStructure, Reason: "truncated field length"}`.
 4. `flen < 8` ⇒
    `DecodeError{Offset: fieldStart, Kind: KindStructure, Reason: "invalid field length %d: minimum 8"}`.
-5. `flen > MaxFieldSize` ⇒
-   `DecodeError{Offset: fieldStart, Kind: KindStructure, Reason: "field length %d exceeds MaxFieldSize %d"}`.
+5. `flen > maxSFLength` (32767, the MO:DCA architectural maximum) ⇒
+   `DecodeError{Offset: fieldStart, Kind: KindStructure, Reason: "field length %d exceeds MO:DCA maximum 32767"}`.
+   (Supersedes the earlier `MaxFieldSize` (1 MiB) bound, which was provably
+   dead — `flen` derives from a uint16 and can never exceed 1 MiB. F01.)
 6. Fewer than `flen` bytes remain ⇒
    `DecodeError{Offset: fieldStart, Kind: KindStructure, Reason: "truncated field: need %d bytes, have %d"}`
    where `need` is `flen` and `have` is the bytes actually available for
@@ -110,10 +112,11 @@ of the full `flen`-byte field — truncation is discovered here — and
 then runs `checkIntroducer` on the assembled buffer: exactly today's
 order (bound checks → truncation → introducer validation), streaming.
 (A two-phase "header-first, validate-introducer-before-body" sketch was
-considered and rejected: for `32767 < flen <= MaxFieldSize` on a short
+considered and rejected: for `32767 < flen <= 65535` on a short
 stream it would report an introducer error where today reports
 `"truncated field: ..."`, violating the same-Kind/Reason/Offset
-guarantee.)
+guarantee. Note: since F01 the iterator rejects `flen > 32767` fail-fast
+at the bound check, so this case no longer reaches truncation.)
 
 Immediate EOF exactly at a field boundary is clean termination, not an
 error (today: `off < len(data)` simply ends the loop); any partial byte
@@ -124,10 +127,10 @@ at a boundary follows the error cases above.
 Peak retained memory is O(one field + read buffer): each yielded `Data`
 buffer is freshly allocated and ownership transfers to the consumer; the
 iterator retains no prior fields. (Transient per-field allocation up to
-`MaxFieldSize` for a field later rejected by introducer validation is
+`maxSFLength` (32767) for a field later rejected by introducer validation is
 accepted — bounded, not retained. The allocation is still never sized by
 an unvalidated claim: the body buffer is allocated only after the
-`MaxFieldSize` bound check.)
+`maxSFLength` bound check.)
 
 ### Byte-identical results
 

@@ -9,11 +9,6 @@ import (
 	"iter"
 )
 
-// MaxFieldSize bounds the claimed length of a single structured field.
-// It is enforced before any allocation based on the claim, so a lying
-// length field can never cause an oversized allocation.
-const MaxFieldSize = 1 << 20 // 1 MiB
-
 // sfiLen is the length of a structured field introducer without extension.
 const sfiLen = 8
 
@@ -89,8 +84,8 @@ func (in Introducer) Encode() []byte {
 // decodeIntroducer parses the structured field introducer at the start of b.
 // b must hold at least the introducer; it may hold more (the field data is
 // not consumed). A claimed length is never trusted for allocation: lengths
-// above MaxFieldSize or the architectural maximum are rejected before any
-// allocation could occur.
+// above the architectural maximum are rejected before any allocation could
+// occur.
 func decodeIntroducer(b []byte) (Introducer, error) {
 	if len(b) < sfiLen {
 		return Introducer{}, DecodeError{
@@ -108,14 +103,6 @@ func decodeIntroducer(b []byte) (Introducer, error) {
 			FieldID: fieldID,
 			Offset:  0,
 			Reason:  fmt.Sprintf("invalid SFLength %d: minimum %d", length, sfiLen),
-		}
-	}
-	if length > MaxFieldSize {
-		return Introducer{}, DecodeError{
-			Kind:    KindStructure,
-			FieldID: fieldID,
-			Offset:  0,
-			Reason:  fmt.Sprintf("SFLength %d exceeds MaxFieldSize %d", length, MaxFieldSize),
 		}
 	}
 	if length > maxSFLength {
@@ -301,17 +288,17 @@ func fieldsOp(r io.Reader, op string) iter.Seq2[StreamField, error] {
 				})
 				return
 			}
-			if flen > MaxFieldSize {
+			if flen > maxSFLength {
 				fail(DecodeError{
 					Kind:   KindStructure,
 					Offset: fieldStart,
-					Reason: fmt.Sprintf("field length %d exceeds MaxFieldSize %d", flen, MaxFieldSize),
+					Reason: fmt.Sprintf("field length %d exceeds MO:DCA maximum %d", flen, maxSFLength),
 				})
 				return
 			}
 			// One ReadFull-equivalent of the whole field: truncation is
 			// discovered here, before introducer validation — today's
-			// order. Allocated only after the MaxFieldSize bound check,
+			// order. Allocated only after the maxSFLength bound check,
 			// so the claim is never trusted for sizing.
 			field := make([]byte, flen)
 			copy(field, two[:])

@@ -103,8 +103,8 @@ func TestFields_ErrorEquivalence(t *testing.T) {
 	// length 64 with flags 0x80 set and no extension bytes -> introducer error.
 	badIntro := []byte{0x00, 0x40, 0xD3, 0xA8, 0xA8, 0x80, 0x00, 0x00}
 	badIntro = append(badIntro, make([]byte, 64-8)...)
-	// Architectural max: flen=40000 > 32767 but < MaxFieldSize; full bytes
-	// present -> truncation passes, introducer validation fails.
+	// Architectural max: flen=40000 > 32767; full bytes present ->
+	// the iterator rejects it fail-fast, before introducer validation.
 	archMax := []byte{0x9C, 0x40, 0xD3, 0xA8, 0xA8, 0x00, 0x00, 0x00}
 	archMax = append(archMax, make([]byte, 40000-8)...)
 
@@ -387,5 +387,36 @@ func TestFields_ErrorAfterCompleteField(t *testing.T) {
 	}
 	if gotErr == nil || !errors.Is(gotErr, boom) {
 		t.Fatalf("Fields error = %v, want wrapped boom after the complete field", gotErr)
+	}
+}
+
+// TestFields_ArchitecturalMaxFailFast pins the fail-fast contract for a
+// claimed length above the MO:DCA architectural maximum (32767): the
+// iterator rejects it at the field's start offset before allocating or
+// reading the body — even when the stream is shorter than the claim, the
+// error is the length-bound violation, not truncation.
+func TestFields_ArchitecturalMaxFailFast(t *testing.T) {
+	// Claims 40000 bytes; only the 2-byte length prefix is present.
+	stream := []byte{0x9C, 0x40}
+	_, err := collectFields(t, bytes.NewReader(stream))
+	if err == nil {
+		t.Fatal("Fields accepted a length above the architectural maximum")
+	}
+	var derr DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("error = %T (%v), want DecodeError", err, err)
+	}
+	if derr.Kind != KindStructure {
+		t.Errorf("Kind = %q, want %q", derr.Kind, KindStructure)
+	}
+	if derr.Offset != 0 {
+		t.Errorf("Offset = %d, want 0 (field start)", derr.Offset)
+	}
+	if derr.FieldID != "" {
+		t.Errorf("FieldID = %q, want empty (rejected before introducer decode)", derr.FieldID)
+	}
+	wantReason := "field length 40000 exceeds MO:DCA maximum 32767"
+	if derr.Reason != wantReason {
+		t.Errorf("Reason = %q, want %q", derr.Reason, wantReason)
 	}
 }
