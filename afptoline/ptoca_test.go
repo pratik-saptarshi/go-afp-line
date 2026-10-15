@@ -384,3 +384,79 @@ func TestDecodePTOCA_AllSequencesParse(t *testing.T) {
 		}
 	}
 }
+
+// TestPtocaStateText_BudgetExceeded: text() enforces the fail-fast budget
+// before appending. An 11-byte segment against remaining=10 returns the
+// budget error and leaves the pending run untouched (nothing allocated).
+func TestPtocaStateText_BudgetExceeded(t *testing.T) {
+	st := &ptocaState{remaining: 10}
+	err := st.text([]byte("0123456789A"))
+	if err == nil {
+		t.Fatal("text accepted 11 bytes with remaining=10")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) || derr.Reason != budgetExceededReason {
+		t.Fatalf("error = %v (%T), want afp.DecodeError with budget reason", err, err)
+	}
+	if len(st.cur) != 0 {
+		t.Fatalf("st.cur grew to %d bytes despite the budget error", len(st.cur))
+	}
+	if st.remaining != 10 {
+		t.Fatalf("remaining = %d, want 10 (unchanged on rejection)", st.remaining)
+	}
+}
+
+// TestPtocaStateText_SuppressedBypassesBudget: bytes inside a suppression
+// region are dropped without consuming budget.
+func TestPtocaStateText_SuppressedBypassesBudget(t *testing.T) {
+	st := &ptocaState{remaining: 0, suppress: []byte{0x01}}
+	if err := st.text([]byte("0123456789A")); err != nil {
+		t.Fatalf("suppressed text hit the budget: %v", err)
+	}
+	if len(st.cur) != 0 {
+		t.Fatalf("st.cur grew to %d bytes inside a suppression region", len(st.cur))
+	}
+}
+
+// TestDoRPS_SuppressedBypassesBudget: an RPS inside a suppression region
+// neither allocates the repeat buffer nor checks the budget — the bytes are
+// dropped, mirroring TestPtocaStateText_SuppressedBypassesBudget.
+func TestDoRPS_SuppressedBypassesBudget(t *testing.T) {
+	// RPS params: RLENGTH = 65535, RPTDATA = "A" — would exceed any budget.
+	params := []byte{0xFF, 0xFF, 0xC1}
+	st := &ptocaState{remaining: 0, suppress: []byte{0x01}}
+	if err := doRPS(st, params, 0); err != nil {
+		t.Fatalf("suppressed RPS hit the budget: %v", err)
+	}
+	if len(st.cur) != 0 {
+		t.Fatalf("st.cur grew to %d bytes inside a suppression region", len(st.cur))
+	}
+}
+
+// TestDoRPS_BudgetPrecheck: doRPS fails fast before allocating the repeat
+// buffer when RLENGTH alone exceeds the remaining budget. RLENGTH=65535
+// against remaining=4096 must error with no large cur growth. The pre-check
+// itself is pinned by allocation count: without it, each call allocates the
+// 64 KiB repeat buffer (1 alloc/call); with it, zero.
+func TestDoRPS_BudgetPrecheck(t *testing.T) {
+	// RPS params: RLENGTH = 65535, RPTDATA = "A" (EBCDIC 0xC1).
+	params := []byte{0xFF, 0xFF, 0xC1}
+	st := &ptocaState{remaining: 4096}
+	err := doRPS(st, params, 0)
+	if err == nil {
+		t.Fatal("doRPS accepted RLENGTH=65535 with remaining=4096")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) || derr.Reason != budgetExceededReason {
+		t.Fatalf("error = %v (%T), want afp.DecodeError with budget reason", err, err)
+	}
+	if len(st.cur) > 4096 {
+		t.Fatalf("st.cur grew to %d bytes: the repeat buffer was allocated before the budget check", len(st.cur))
+	}
+	if allocs := testing.AllocsPerRun(50, func() {
+		s := &ptocaState{remaining: 4096}
+		_ = doRPS(s, params, 0)
+	}); allocs >= 1 {
+		t.Fatalf("doRPS averaged %.1f allocations per call: the 64 KiB repeat buffer was allocated before the budget check", allocs)
+	}
+}

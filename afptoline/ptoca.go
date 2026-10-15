@@ -44,6 +44,12 @@ type ptocaState struct {
 
 	cp  afp.CodePage
 	cur []byte // pending text bytes for the run being accumulated
+	// remaining caps additional text() bytes; negative means unlimited.
+	// It is the fail-fast security boundary against amplification (RPS):
+	// the budget is checked before any segment is appended or any repeat
+	// buffer allocated, so a hostile field cannot force a large transient
+	// allocation.
+	remaining int
 	// curX, curY, curFont record where the pending run started (points, PTOCA
 	// object space). Set by markStart on the first byte of a run.
 	curX, curY float64
@@ -57,14 +63,26 @@ func (st *ptocaState) pos() (x, y float64) {
 	return st.ic / lUnitsPerPoint, st.bc / lUnitsPerPoint
 }
 
+// budgetExceededReason is the DecodeError Reason when decoded text exceeds
+// the configured budget. The reducer matches on it to attach the offending
+// field's identity and stream offset.
+const budgetExceededReason = "decoded text budget exceeded"
+
 // text accumulates graphic-character bytes into the pending run. Bytes inside
-// a suppression region are dropped (never presented); control sequences still
-// execute, so position state stays correct.
-func (st *ptocaState) text(b []byte) {
+// a suppression region are dropped (never presented, never budgeted, nothing
+// allocated). Otherwise the fail-fast budget is enforced before appending:
+// a segment that alone exceeds the remaining budget is rejected without
+// touching the pending run.
+func (st *ptocaState) text(b []byte) error {
 	if len(st.suppress) > 0 {
-		return
+		return nil
+	}
+	if st.remaining >= 0 && len(b) > st.remaining {
+		return afp.DecodeError{Reason: budgetExceededReason}
 	}
 	st.cur = append(st.cur, b...)
+	st.remaining -= len(b)
+	return nil
 }
 
 // flush ends the pending run, keeping the start position recorded by
@@ -102,6 +120,14 @@ func (st *ptocaState) markStart() {
 // (that needs font metrics, applied by Task 8); DIR/DBR rules and STC color
 // are parsed but not emitted as runs.
 func DecodePTOCA(f afp.Field, cp afp.CodePage) ([]Run, error) {
+	return decodePTOCA(f, cp, -1)
+}
+
+// decodePTOCA is DecodePTOCA with an explicit cap on decoded text bytes.
+// maxBytes < 0 means unlimited; otherwise the fail-fast budget in
+// ptocaState.remaining aborts the decode before any segment or repeat buffer
+// can exceed it.
+func decodePTOCA(f afp.Field, cp afp.CodePage, maxBytes int) ([]Run, error) {
 	rf, ok := f.(*afp.RawField)
 	if !ok {
 		return nil, afp.DecodeError{Reason: fmt.Sprintf("DecodePTOCA needs *afp.RawField, got %T", f)}
@@ -109,7 +135,7 @@ func DecodePTOCA(f afp.Field, cp afp.CodePage) ([]Run, error) {
 	if id := rf.Intro.TypeIDString(); id != "D3EE9B" {
 		return nil, afp.DecodeError{FieldID: id, Reason: "DecodePTOCA needs a PTX field (D3EE9B)"}
 	}
-	st := &ptocaState{cp: cp}
+	st := &ptocaState{cp: cp, remaining: maxBytes}
 	data := rf.Data
 	pos := 0
 	for pos < len(data) {
@@ -140,7 +166,9 @@ func DecodePTOCA(f afp.Field, cp afp.CodePage) ([]Run, error) {
 			end++
 		}
 		st.markStart()
-		st.text(data[pos:end])
+		if err := st.text(data[pos:end]); err != nil {
+			return nil, err
+		}
 		pos = end
 	}
 	st.flush()
@@ -340,8 +368,7 @@ func doSTO(st *ptocaState, params []byte, offset int) error {
 // were already delimited by Length.
 func doTRN(st *ptocaState, params []byte, _ int) error {
 	st.markStart()
-	st.text(params)
-	return nil
+	return st.text(params)
 }
 
 // doRPS processes Repeat String: RLENGTH(2B) then RPTDATA bytes. The RPTDATA
@@ -365,14 +392,26 @@ func doRPS(st *ptocaState, params []byte, offset int) error {
 			Reason:  fmt.Sprintf("RPS RLENGTH %d exceeds available %d bytes", n, len(data)),
 		}
 	}
+	// Suppressed bytes are dropped without consuming budget (see text()), so
+	// a suppressed RPS neither allocates the repeat buffer nor checks the
+	// budget against it.
+	if len(st.suppress) > 0 {
+		return nil
+	}
+	// Fail fast before allocating the repeat buffer: an RLENGTH that alone
+	// exceeds the remaining budget can never be satisfied, so reject it
+	// without the up-to-64 KiB transient.
+	if st.remaining >= 0 && n > st.remaining {
+		return afp.DecodeError{Reason: budgetExceededReason}
+	}
 	st.markStart()
-	// RLENGTH is a uint16, so the repeat buffer is bounded at 64 KiB.
+	// RLENGTH is a uint16, so the repeat buffer is bounded at 64 KiB, and
+	// the pre-check above guarantees it fits the remaining budget.
 	repeated := make([]byte, 0, n)
 	for len(repeated) < n {
 		repeated = append(repeated, data...)
 	}
-	st.text(repeated[:n])
-	return nil
+	return st.text(repeated[:n])
 }
 
 // doRule validates DIR/DBR (length 4: RLENGTH only; length 7: + 3-byte

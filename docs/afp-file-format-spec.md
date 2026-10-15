@@ -7,8 +7,6 @@ implementers — paraphrased, not a reproduction. For authoritative detail, cons
 - MO:DCA Reference (MODCA-Reference-09): https://afpcinc.org/wp-content/uploads/2017/12/MODCA-Reference-09.pdf
 - MOCA Reference (AFPC-0013-01): https://afpcinc.org/wp-content/uploads/2016/08/MOCA-Reference-Metadata-Object-Content-Architecture-Reference.pdf
 
-Local copies: `docs/_evidence/modca/MODCA-Reference-09.pdf`, `docs/_evidence/modca/MOCA-Reference.pdf`.
-
 ---
 
 ## 1. What an AFP file is

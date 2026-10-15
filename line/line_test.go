@@ -125,6 +125,21 @@ func TestPage_Validate(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects NaN and -Inf dimensions and font size", func(t *testing.T) {
+		for _, v := range []float64{math.NaN(), math.Inf(-1)} {
+			if err := (Page{Number: 1, Width: v, Height: 792}).Validate(); err == nil {
+				t.Errorf("Validate() = nil for width %v, want error", v)
+			}
+			if err := (Page{Number: 1, Width: 612, Height: v}).Validate(); err == nil {
+				t.Errorf("Validate() = nil for height %v, want error", v)
+			}
+			r := TextRun{Text: "x", X: 72, Y: 720, FontSize: v, FontID: "FIX-MONO-10"}
+			if err := r.Validate(); err == nil {
+				t.Errorf("Validate() = nil for font size %v, want error", v)
+			}
+		}
+	})
+
 	t.Run("locates failing run", func(t *testing.T) {
 		p := validPage()
 		p.Runs = append(p.Runs, TextRun{Text: "bad", X: 10, Y: 10, FontSize: -1, FontID: "FIX-MONO-10"})

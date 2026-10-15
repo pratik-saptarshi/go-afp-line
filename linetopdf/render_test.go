@@ -240,6 +240,62 @@ func TestEncodeText_WinAnsiSpecials(t *testing.T) {
 	}
 }
 
+// TestEncodeText_Escapes pins PDF literal-string escaping: the delimiter
+// bytes ( ) and the escape character itself must be backslash-escaped, and
+// control bytes must use three-digit octal escapes.
+func TestEncodeText_Escapes(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"(", "\\("},
+		{")", "\\)"},
+		{"\\", "\\\\"},
+		{"\x01\x02", "\\001\\002"},
+		{"\x7f", "\\177"},
+		{"a(b)\\c", "a\\(b\\)\\\\c"},
+	} {
+		got, err := encodeText(tc.in)
+		if err != nil {
+			t.Fatalf("encodeText(%q): %v", tc.in, err)
+		}
+		if got != tc.want {
+			t.Errorf("encodeText(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestEncodeText_WinAnsiBoundaries pins the edges of the WinAnsi mapping:
+// the first and last bytes of the 0x80–0x9F specials, the top of the
+// U+00A0–U+00FF identity range, and the first code point beyond it (error).
+// It also pins that the C1 controls U+0080–U+009F have no mapping — they
+// must not alias the printable bytes assigned to that range.
+func TestEncodeText_WinAnsiBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"Œ", "\x8c", false}, // U+0152, first special at 0x8C
+		{"Ÿ", "\x9f", false}, // U+0178, last special at 0x9F
+		{"ÿ", "\xff", false}, // U+00FF, top of the identity range
+		{"Ā", "", true},      // U+0100, first code point with no mapping
+		{"\u0080", "", true}, // C1 controls must not alias 0x80
+		{"\u009f", "", true}, // C1 controls must not alias 0x9F
+	} {
+		got, err := encodeText(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("encodeText(%q) = %q, want error", tc.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("encodeText(%q): %v", tc.in, err)
+		}
+		if got != tc.want {
+			t.Errorf("encodeText(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestRender_UnknownFontID(t *testing.T) {
 	doc := line.Document{Pages: []line.Page{{
 		Number: 1, Width: 612, Height: 792,

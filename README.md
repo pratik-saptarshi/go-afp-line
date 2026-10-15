@@ -24,7 +24,7 @@ subset fails loudly with a diagnostic — never silently.
   overlays, …) become `line.Exclusion` diagnostics; malformed input aborts with a
   typed `DecodeError`. Nothing is silently dropped.
 - **PTOCA control-sequence state machine** — 19 control sequences with per-sequence
-  unit tests; wire formats verified against the IBM PTOCA Reference.
+  unit tests; wire formats per the AFP subset contract (`docs/subset-contract.md`).
 - **Dual code-page support** — EBCDIC 037 and 500 registries with full decode tables.
 - **Conservation law** — every PTOCA text byte is accounted for as placed,
   suppressed-with-reason, or excluded-with-diagnostic.
