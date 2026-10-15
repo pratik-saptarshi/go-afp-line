@@ -57,3 +57,16 @@ jobs:
           echo "total coverage: ${TOTAL}% (floor: ${FLOOR}%)"
           awk -v got="${TOTAL}" -v want="${FLOOR}" 'BEGIN {exit !(got >= want)}' \
             || { echo "coverage ${TOTAL}% is below floor ${FLOOR}%"; exit 1; }
+
+  vuln:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.27"
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
