@@ -61,9 +61,19 @@ except for documented items under "Accepted changes".
 
 ### Framing
 
-- Wrap detection is identical to today: peek the first up-to-6 bytes once,
-  apply the existing `IsWrapped` predicate (short input ⇒ not wrapped).
-  Streams are homogeneous; the decision is stream-global.
+- Wrap detection is identical to today, modulo how much is peeked: read
+  a prefix once, then apply the existing `IsWrapped` predicate to that
+  prefix. The prefix length is `1+l` where `l` is the big-endian uint16
+  at bytes `[1:3]` when byte 0 is `0x5A` and at least 4 bytes are
+  available; otherwise up to 6 bytes. (A fixed 6-byte peek is wrong:
+  `IsWrapped` requires `l <= len(data)-1` with `l >= 8` for any valid
+  record, which a 6-byte prefix can never satisfy — every wrapped stream
+  would be misdetected as naked.) This reproduces today's predicate
+  exactly, including the truncated-stream edge: a short stream yields a
+  short prefix, and `l <= len(prefix)-1` evaluates identically to
+  `l <= len(data)-1` on that prefix. The peek only ever holds bytes the
+  stream actually contains, so it is DoS-safe. Streams are homogeneous;
+  the decision is stream-global.
 - On wrapped streams, each record's leading `0x5A` is validated (C1) and
   stripped; the 2-byte record length doubles as SFLength, exactly as today.
 
@@ -85,19 +95,27 @@ streams (captured before stripping), matching today's `fieldStart := off`.
    `DecodeError{Offset: fieldStart, Kind: KindStructure, Reason: "field length %d exceeds MaxFieldSize %d"}`.
 6. Fewer than `flen` bytes remain ⇒
    `DecodeError{Offset: fieldStart, Kind: KindStructure, Reason: "truncated field: need %d bytes, have %d"}`
-   where `have` is the bytes actually available for this field.
+   where `need` is `flen` and `have` is the bytes actually available for
+   this field **counted from the introducer, excluding the 5A marker** —
+   matching today's post-strip `len(data)-off`.
 7. Introducer invalid ⇒ today's `checkIntroducer` result: `DecodeError`
    from `DecodeIntroducer` with `Offset += fieldStart`.
 
 Error *precedence* matters: truncation (6) is reported before introducer
 validation (7), and the length bound checks (4–5) before truncation.
-The recommended implementation reads the header first (8 bytes, plus
-extension bytes when the ext bit is set and the claimed length permits,
-capped at `flen`), runs the bound checks, then reads the body — which
-preserves this order. No allocation is sized by an unvalidated claim:
-the body buffer is allocated only after the `MaxFieldSize` bound check,
-and the introducer is semantically validated (via the existing
-`DecodeIntroducer` on the assembled header) before the body is trusted.
+The implementation performs, after the bound checks, one `io.ReadFull`
+of the full `flen`-byte field — truncation is discovered here — and
+then runs `checkIntroducer` on the assembled buffer: exactly today's
+order (bound checks → truncation → introducer validation), streaming.
+(A two-phase "header-first, validate-introducer-before-body" sketch was
+considered and rejected: for `32767 < flen <= MaxFieldSize` on a short
+stream it would report an introducer error where today reports
+`"truncated field: ..."`, violating the same-Kind/Reason/Offset
+guarantee.)
+
+Immediate EOF exactly at a field boundary is clean termination, not an
+error (today: `off < len(data)` simply ends the loop); any partial byte
+at a boundary follows the error cases above.
 
 ### Allocation / retention bound
 
@@ -105,9 +123,9 @@ Peak retained memory is O(one field + read buffer): each yielded `Data`
 buffer is freshly allocated and ownership transfers to the consumer; the
 iterator retains no prior fields. (Transient per-field allocation up to
 `MaxFieldSize` for a field later rejected by introducer validation is
-accepted — bounded, not retained. Today's code avoids even that by
-validating before copying; the recommended header-first read above keeps
-that property for the 32767..1MiB window too.)
+accepted — bounded, not retained. The allocation is still never sized by
+an unvalidated claim: the body buffer is allocated only after the
+`MaxFieldSize` bound check.)
 
 ### Byte-identical results
 
@@ -155,8 +173,12 @@ must pass unchanged).
 
 1. **Read-error text in `Reduce`.** Today a read failure surfaces as
    `afptoline: read input: <err>`; after migration it surfaces as
-   `afp: Fields: <err>`. No test asserts the old text (verified). Error
-   *kinds* are unaffected (read errors were never `DecodeError`).
+   `afp: Fields: <err>` (it names the failing operation; strictly more
+   informative). `afptoline/reduce_test.go:850`
+   (`TestReduceWithBudget_ReadError`) asserts the old `"read input"`
+   text and is updated to assert the new wrapper text as part of this
+   task — its real intent (wrapped, not a `DecodeError`) is preserved.
+   Error *kinds* are unaffected (read errors were never `DecodeError`).
 2. **`SplitFields` on huge inputs** still materializes — it is documented
    as the convenience wrapper; `Fields` is the streaming path.
 
@@ -184,22 +206,25 @@ Proving "bounded retention" without materializing a huge input:
 The test asserts the *ceiling*, not an actual huge allocation, per the
 task's Done-when.
 
-## Open questions for the reviewer
+## Reviewer decisions (signed off)
 
-1. **Keep `SplitFields` as a wrapper (recommended) vs. remove it?**
-   Removal is cleaner but breaking; the wrapper is 8 lines.
-2. **Migrate `RoundTrip` to the iterator (recommended) vs. leave it on
-   `SplitFields`?** Migration keeps the fidelity gate streaming;
-   leaving it is less churn.
-3. **Read-error text in `Reduce`** — accept `afp: Fields: <err>`
-   (recommended) or preserve `afptoline: read input:` via re-wrap of
-   non-`DecodeError` terminal errors?
-4. **`IsWrapped` stays exported** even though `Reduce` no longer calls
-   it (compat; it documents the framing predicate)? Recommended: yes.
-5. **`StreamField` shape** — is `{Data []byte, Offset int}` the right
-   minimal surface, or should the iterator also expose `Wrapped()`
-   for consumers that need framing-aware accounting?
-6. **Header-first read sketch** (header → bound checks → introducer
-   validation → body alloc → body read): does it preserve the error
-   precedence in §"Error sequence" in all edge cases the reviewer can
-   construct (especially truncated-extension and 32767 < flen ≤ 1MiB)?
+The independent contract reviewer adjudicated the open questions; the
+decisions below are part of the approved contract.
+
+1. **Keep `SplitFields` as a collecting wrapper** — removal would break
+   exported API for an 8-line convenience.
+2. **Migrate `RoundTrip` to the iterator** — the task's Done-when is "no
+   `io.ReadAll` remains on the input path"; leaving the fidelity gate
+   buffering would defeat it.
+3. **Accept `afp: Fields: <err>` in `Reduce`** — re-wrapping for cosmetic
+   continuity isn't worth the code; `TestReduceWithBudget_ReadError`
+   is updated to assert the new text (see Accepted changes §1).
+4. **Keep `IsWrapped` exported** — compat; it documents the framing
+   predicate and advertises itself for offset accounting.
+5. **Keep the minimal `StreamField{Data []byte, Offset int}` surface** —
+   the wire offset subsumes what consumers need; no `Wrapped()`
+   (YAGNI).
+6. **Drop the header-first read sketch** — it inverts truncation-vs-
+   introducer precedence for `32767 < flen <= MaxFieldSize`; the
+   single-`ReadFull`-then-`checkIntroducer` order in §"Error sequence"
+   is the contract.
