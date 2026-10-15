@@ -1,15 +1,38 @@
 name: ci
 
 on:
+  # PR branch pushes are validated by the pull_request run below, which
+  # tests the merge commit (the actual merge result); the push trigger
+  # covers direct pushes to main. This yields exactly one run per push
+  # while never leaving the merged result untested.
   push:
+    branches: [main]
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  # head_ref is set for pull_request events; ref_name for push. Using both
+  # puts the push run and the PR synchronize run for the same branch in one
+  # group, so a push to an open PR cancels the in-flight duplicate and
+  # exactly one run completes. (github.ref would NOT work: push uses
+  # refs/heads/<branch> while pull_request uses refs/pull/<N>/merge.)
+  # The head repository scopes the group so fork PRs reusing a branch name
+  # (commonly main or patch-1) cannot cancel each other's validation; for
+  # push events head.repo is empty and this falls back to this repository.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.27"
       - name: gofmt

@@ -20,8 +20,10 @@ For a long-lived library, an abandoned writer dependency is the dominant risk.
 
 ## Method
 
-Spike code and measurement evidence: `docs/_evidence/writerspike/` (`main.go`, `go.mod`,
-`go.sum`, `gofpdf.bbox.xml`, `pdfcpu.bbox.xml`).
+Spike code and measurement evidence: `docs/_evidence/writerspike/` (`main.go`,
+`gofpdf.bbox.xml`, `pdfcpu.bbox.xml`).
+<!-- Evidence note: the spike's former nested go.mod/go.sum were removed (de-modulized);
+     the source and measurement evidence is retained. -->
 
 Each candidate generated a one-page Letter PDF with two text runs:
 - "HELLO", Helvetica 12pt, baseline origin (100, 92) in PDF user space (bottom-left origin)

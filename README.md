@@ -138,6 +138,31 @@ go test -fuzz=FuzzDecodeIntroducer -fuzztime=60s ./afp/
 go test -fuzz=FuzzDecodeField -fuzztime=60s ./afp/
 ```
 
+### Test dependency: poppler (`pdftotext`)
+
+The PDF geometry tests in `linetopdf` (`TestRender_Positions`,
+`TestRender_WidthMatchesMetrics`, `TestRender_Untagged`) call the
+poppler-gated `renderFixtureToPDF` helper: the first two read back the word
+positions with `pdftotext -bbox` — poppler acts as the
+independent reader (it shares no code with the pdfcpu writer) — while
+`TestRender_Untagged` re-renders and greps the raw bytes. You need
+`pdftotext` on your PATH before running the full suite.
+
+Install it:
+
+```bash
+sudo apt-get update && sudo apt-get install -y poppler-utils   # Debian/Ubuntu
+brew install poppler                                            # macOS
+```
+
+This mirrors CI: `.github/workflows/ci.yml` installs `poppler-utils` via
+`sudo apt-get update && sudo apt-get install -y poppler-utils` on
+`ubuntu-latest` before running `go test -race -shuffle=on ./...`.
+
+If `pdftotext` is missing, the tests that need it **skip** locally. With
+`CI=true` in the environment, they **fail fast** instead (`t.Fatal`), so CI
+never silently passes with the independent-reader checks disabled.
+
 CI runs `gofmt`, `go mod tidy -diff`, `go vet`, and `go test -race` on every push.
 
 ## Repository layout
