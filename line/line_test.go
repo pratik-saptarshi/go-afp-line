@@ -266,3 +266,94 @@ func TestTextRunValidate_RejectsC1(t *testing.T) {
 		}
 	}
 }
+func TestPage_Validate_DimensionBounds(t *testing.T) {
+	t.Run("accepts dimensions up to and including 14400", func(t *testing.T) {
+		for _, dims := range [][2]float64{{14400, 14400}, {0.01, 792}, {612, 0.01}, {1, 1}} {
+			p := Page{Number: 1, Width: dims[0], Height: dims[1]}
+			if err := p.Validate(); err != nil {
+				t.Errorf("Validate() = %v for dimensions %v, want nil", err, dims)
+			}
+		}
+	})
+
+	t.Run("rejects dimensions just above 14400", func(t *testing.T) {
+		for _, dims := range [][2]float64{{14400.01, 792}, {612, 14400.01}, {14400.01, 14400.01}} {
+			p := Page{Number: 1, Width: dims[0], Height: dims[1]}
+			if err := p.Validate(); err == nil {
+				t.Errorf("Validate() = nil for dimensions %v, want error", dims)
+			}
+		}
+	})
+
+	t.Run("rejects zero and negative dimensions", func(t *testing.T) {
+		for _, dims := range [][2]float64{{0, 792}, {612, 0}, {-1, 792}, {612, -1}, {-14400, 14400}} {
+			p := Page{Number: 1, Width: dims[0], Height: dims[1]}
+			if err := p.Validate(); err == nil {
+				t.Errorf("Validate() = nil for dimensions %v, want error", dims)
+			}
+		}
+	})
+
+	t.Run("rejects NaN and ±Inf dimensions", func(t *testing.T) {
+		for _, v := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+			if err := (Page{Number: 1, Width: v, Height: 792}).Validate(); err == nil {
+				t.Errorf("Validate() = nil for width %v, want error", v)
+			}
+			if err := (Page{Number: 1, Width: 612, Height: v}).Validate(); err == nil {
+				t.Errorf("Validate() = nil for height %v, want error", v)
+			}
+		}
+	})
+}
+
+func TestTextRun_Validate_CoordinateBounds(t *testing.T) {
+	t.Run("accepts coordinates with |v| <= 14400", func(t *testing.T) {
+		for _, coords := range [][2]float64{{14400, 14400}, {-14400, -14400}, {14400, -14400}, {0, 0}} {
+			r := validRun()
+			r.X, r.Y = coords[0], coords[1]
+			if err := r.Validate(); err != nil {
+				t.Errorf("Validate() = %v for coordinates %v, want nil", err, coords)
+			}
+		}
+	})
+
+	t.Run("rejects coordinates with |v| > 14400", func(t *testing.T) {
+		for _, coords := range [][2]float64{{14400.01, 720}, {72, 14400.01}, {-14400.01, 720}, {72, -14400.01}} {
+			r := validRun()
+			r.X, r.Y = coords[0], coords[1]
+			if err := r.Validate(); err == nil {
+				t.Errorf("Validate() = nil for coordinates %v, want error", coords)
+			}
+		}
+	})
+
+	t.Run("negative coordinates remain legal (off-page placement)", func(t *testing.T) {
+		for _, v := range []float64{-1, -72, -14399.99, -14400} {
+			r := validRun()
+			r.X, r.Y = v, v
+			if err := r.Validate(); err != nil {
+				t.Errorf("Validate() = %v for coordinates %v, want nil", err, v)
+			}
+		}
+	})
+
+	t.Run("rejects NaN and ±Inf coordinates and font size", func(t *testing.T) {
+		for _, v := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+			r := validRun()
+			r.X = v
+			if err := r.Validate(); err == nil {
+				t.Errorf("Validate() = nil for X %v, want error", v)
+			}
+			r = validRun()
+			r.Y = v
+			if err := r.Validate(); err == nil {
+				t.Errorf("Validate() = nil for Y %v, want error", v)
+			}
+			r = validRun()
+			r.FontSize = v
+			if err := r.Validate(); err == nil {
+				t.Errorf("Validate() = nil for font size %v, want error", v)
+			}
+		}
+	})
+}
