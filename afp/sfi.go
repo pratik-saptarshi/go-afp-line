@@ -256,6 +256,12 @@ func fieldsOp(r io.Reader, op string) iter.Seq2[StreamField, error] {
 			// impossible length; treat it as wrapped so the length bound
 			// check below rejects it instead of misclassifying the
 			// framing and reporting truncation.
+			// Note: prefix[2] == 0xD3 is deliberately excluded. That
+			// input is genuinely ambiguous — it is also a plausible
+			// naked field (length 0x5AXX, type triple at [2:5]) — and
+			// preferring the valid interpretation avoids false
+			// rejections. A short such stream reports truncation, which
+			// is defensible for both readings.
 			wrapped = true
 		}
 		// The prefix bytes are stream bytes; continue reading after them.
