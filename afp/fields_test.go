@@ -420,3 +420,34 @@ func TestFields_ArchitecturalMaxFailFast(t *testing.T) {
 		t.Errorf("Reason = %q, want %q", derr.Reason, wantReason)
 	}
 }
+
+// TestFields_WrappedOverMaxLength pins the fail-fast contract for a
+// 5A-wrapped record claiming more than the architectural maximum: the
+// bound violation is reported even when the record is truncated short,
+// and framing is not misclassified as naked (which would report
+// truncation instead).
+func TestFields_WrappedOverMaxLength(t *testing.T) {
+	// 5A marker, length 40000 (0x9C40), BDT introducer; body absent.
+	stream := []byte{0x5A, 0x9C, 0x40, 0xD3, 0xA8, 0xA8, 0x00, 0x00}
+	_, err := collectFields(t, bytes.NewReader(stream))
+	if err == nil {
+		t.Fatal("Fields accepted a wrapped length above the architectural maximum")
+	}
+	var derr DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("error = %T (%v), want DecodeError", err, err)
+	}
+	if derr.Kind != KindStructure {
+		t.Errorf("Kind = %q, want %q", derr.Kind, KindStructure)
+	}
+	if derr.Offset != 0 {
+		t.Errorf("Offset = %d, want 0 (field start)", derr.Offset)
+	}
+	if derr.FieldID != "" {
+		t.Errorf("FieldID = %q, want empty (rejected before introducer decode)", derr.FieldID)
+	}
+	wantReason := "field length 40000 exceeds MO:DCA maximum 32767"
+	if derr.Reason != wantReason {
+		t.Errorf("Reason = %q, want %q", derr.Reason, wantReason)
+	}
+}

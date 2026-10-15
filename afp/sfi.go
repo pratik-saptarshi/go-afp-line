@@ -245,6 +245,19 @@ func fieldsOp(r io.Reader, op string) iter.Seq2[StreamField, error] {
 			return
 		}
 		wrapped := isWrapped(prefix)
+		if !wrapped && len(prefix) >= 4 && prefix[0] == 0x5A &&
+			prefix[2] != 0xD3 && prefix[3] == 0xD3 &&
+			int(binary.BigEndian.Uint16(prefix[1:3])) > maxSFLength {
+			// Bound-aware framing fallback: isWrapped needs the full
+			// record, which readPrefix deliberately does not fetch when
+			// the claimed length exceeds the architectural maximum.
+			// A 5A-prefixed record with D3 at [3] (and not at [2], which
+			// would start a naked type triple) is wrapped with an
+			// impossible length; treat it as wrapped so the length bound
+			// check below rejects it instead of misclassifying the
+			// framing and reporting truncation.
+			wrapped = true
+		}
 		// The prefix bytes are stream bytes; continue reading after them.
 		stream := io.MultiReader(bytes.NewReader(prefix), r)
 		off := 0
@@ -341,8 +354,11 @@ func fieldsOp(r io.Reader, op string) iter.Seq2[StreamField, error] {
 
 // readPrefix reads the framing-detection prefix: up to 1+l bytes where l
 // is the big-endian uint16 at [1:3] when byte 0 is 0x5A and at least 4
-// bytes are available, else up to 6 bytes. A short stream yields a short
-// prefix (whatever the stream holds); a read error aborts the prefix.
+// bytes are available, else up to 6 bytes. A claimed length above the
+// architectural maximum is never trusted for sizing the probe: the head
+// is returned as-is and the caller applies a bound-aware framing
+// fallback. A short stream yields a short prefix (whatever the stream
+// holds); a read error aborts the prefix.
 func readPrefix(r io.Reader) ([]byte, error) {
 	var first [4]byte
 	n, err := io.ReadFull(r, first[:])
@@ -352,7 +368,11 @@ func readPrefix(r io.Reader) ([]byte, error) {
 	head := first[:n]
 	want := 6
 	if n >= 4 && head[0] == 0x5A {
-		want = 1 + int(binary.BigEndian.Uint16(head[1:3]))
+		if l := int(binary.BigEndian.Uint16(head[1:3])); l > maxSFLength {
+			return head, nil
+		} else {
+			want = 1 + l
+		}
 	}
 	if len(head) >= want {
 		return head, nil
