@@ -73,21 +73,35 @@ The reviewer should attack these five inputs specifically:
 
 ### Task A3: Decoded-text budget (RPS amplification DoS)
 
-**Files:** `afptoline/reduce.go`, `afptoline/reduce_test.go` (or `ptoca_test.go` if the harness fits better)
+**Files:** `afptoline/ptoca.go`, `afptoline/reduce.go`, `afptoline/reduce_test.go` (and/or `ptoca_test.go`)
 
-**Interfaces (final):**
-- `const DefaultMaxTextBytes = 1 << 20` in `afptoline`.
-- `func ReduceWithBudget(r io.Reader, maxTextBytes int) (line.Document, []line.Exclusion, error)`; `maxTextBytes <= 0` returns an immediate error (`"non-positive text budget"`).
-- `Reduce(r)` delegates: `return ReduceWithBudget(r, DefaultMaxTextBytes)`.
-- `reduceState` gains `textLeft int` (init from budget) and `off int` (cumulative stream offset, updated in the visit loop as `st.off += len(raw.Encode())` before each `visit`).
-- In `visitPTX`, after `DecodePTOCA`: sum UTF-8 bytes of decoded run texts; if the sum exceeds `st.textLeft`, return `afp.DecodeError{FieldID: <ptx type id>, Offset: st.off, Reason: "decoded text budget exceeded"}`; else `st.textLeft -= sum`.
+**Background (spec amendment 2026-10-15):** the first implementation enforced the
+budget *after* `DecodePTOCA` fully expanded the field. Independent review
+measured ~4.6 GiB cumulative allocation (~820 MiB peak) from a 32.1 KiB hostile
+stream before the error fired — a transient DoS, still an OOM kill on
+constrained hosts. The budget MUST be enforced fail-fast *inside* the decode
+loop. This amends the interfaces below (supersedes the 2026-10-15 plan rev 1).
+
+**Interfaces (final, rev 2):**
+- `const DefaultMaxTextBytes = 1 << 20` in `afptoline` (unchanged).
+- `func ReduceWithBudget(r io.Reader, maxTextBytes int) (line.Document, []line.Exclusion, error)`; `maxTextBytes <= 0` returns an immediate error (`"non-positive text budget"`); `Reduce(r)` delegates (unchanged).
+- `ptocaState` gains `remaining int`: max additional `text()` bytes allowed; negative = unlimited.
+- `func (st *ptocaState) text(b []byte) error`: bytes inside a suppression region are dropped without consuming budget (nothing is allocated); otherwise, if `st.remaining >= 0 && len(b) > st.remaining`, return `afp.DecodeError{Reason: "decoded text budget exceeded"}` **before** appending; else append and `st.remaining -= len(b)`. All existing `text()` call sites updated for the error return.
+- `doRPS`: before allocating the repeat buffer, if `st.remaining >= 0 && int(rlength) > st.remaining`, return the budget error immediately (no 64 KiB transient).
+- `DecodePTOCA(f, cp)` keeps its exported signature and delegates to the new internal `decodePTOCA(f afp.Field, cp afp.CodePage, maxBytes int) ([]Run, error)` with `maxBytes = -1`.
+- `visitPTX` calls `decodePTOCA(f, st.cp, st.textLeft)`; the decoder's budget error propagates wrapped with the PTX field ID and `st.off`.
+- `reduceState` keeps `textLeft int` (init from budget) and `off int`; after a successful decode, `st.textLeft -= <sum of UTF-8 bytes of decoded run texts>` as a retained-text cap (defense-in-depth; the decoder's fail-fast is the security boundary).
+- Fix `st.off` to equal the true wire offset on 5A-wrapped streams (the `len(raw.Encode())` accounting under-counts framing bytes); add a regression test with a 5A-wrapped PTX asserting the budget error's offset.
 
 **Steps:**
-1. Write the regression test first: synthesize a PTX whose RPS sequences expand past a small budget (e.g. `ReduceWithBudget(r, 4096)`); expect the budget error. Also assert a normal document at exactly the budget passes (existing suite covers the default path via `Reduce`).
+1. Write failing tests first:
+   - White-box fail-fast: `text()` with `remaining = 10` and an 11-byte input returns the budget error and leaves `st.cur` unchanged; `doRPS` with `rlength = 65535`, `remaining = 4096` returns before allocating (assert error, and assert no large `st.cur` growth).
+   - End-to-end: RPS-heavy PTX via `ReduceWithBudget(r, 4096)` fails with the budget error naming the PTX offset.
+   - Boundaries (ASCII, so source bytes == decoded bytes): document at exactly the budget passes; budget+1 fails.
 2. Implement per the interfaces above.
 3. `go test -count=1 -race ./...`, `go vet ./...`, `gofmt -l` clean.
 
-**Done when:** a 32 KB RPS-heavy field can no longer expand past the budget, the error carries the offending PTX's offset, and all existing tests pass unmodified.
+**Done when:** a hostile RPS stream fails fast with no per-field expansion beyond `remaining` + one segment, the error carries the offending PTX's true wire offset, all existing tests pass unmodified, and the independent reviewer approves.
 **Commit:** `fix(afptoline): bound decoded text per document (RPS amplification)`
 
 ### Task A4: Pin escaping, WinAnsi boundaries, non-finite dimensions
