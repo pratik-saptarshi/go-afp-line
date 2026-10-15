@@ -154,7 +154,7 @@ func (st *reduceState) visitRaw(t *afp.RawField) error {
 		}
 		st.bng--
 	case "D3A8C9": // BAG
-		if !st.inDoc || st.page != nil || st.bag != 0 {
+		if !st.inDoc || st.page == nil || st.bag != 0 {
 			return st.fail(id, "BAG in illegal position")
 		}
 		st.bag++

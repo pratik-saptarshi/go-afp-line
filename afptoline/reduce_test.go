@@ -189,6 +189,7 @@ var (
 	tEPG = [3]byte{0xD3, 0xA9, 0xAF}
 	tPTX = [3]byte{0xD3, 0xEE, 0x9B}
 	tBAG = [3]byte{0xD3, 0xA8, 0xC9}
+	tEAG = [3]byte{0xD3, 0xA9, 0xC9}
 )
 
 // ebcdicSpaces returns n EBCDIC-037 space (0x40) bytes for CHAR parameters.
@@ -239,5 +240,29 @@ func TestReduce_PairingErrors(t *testing.T) {
 				t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
 			}
 		})
+	}
+}
+
+// TestReduce_BAGInsidePage: BAG/EAG inside an open page is the contract walk
+// (docs/subset-contract.md: BPG → BAG … EAG → … EPG) and must reduce
+// successfully — CQ-1 regression test.
+func TestReduce_BAGInsidePage(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	bag := rawField(tBAG, nil)
+	eag := rawField(tEAG, nil)
+	epg := rawField(tEPG, ebcdicSpaces(8))
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+
+	var buf bytes.Buffer
+	for _, f := range [][]byte{bdt, bpg, bag, eag, epg, edt} {
+		buf.Write(f)
+	}
+	doc, _, err := Reduce(&buf)
+	if err != nil {
+		t.Fatalf("Reduce: %v", err)
+	}
+	if len(doc.Pages) != 1 {
+		t.Fatalf("got %d pages, want 1", len(doc.Pages))
 	}
 }
