@@ -639,3 +639,36 @@ func TestReduceWithCodePage_CP500(t *testing.T) {
 		t.Errorf("Reduce: text = %q, want %q (code page 37)", got, "¢")
 	}
 }
+
+// TestReduceWithCodePage_IMMNameDecoding: the IMM exclusion diagnostic decodes
+// MMPName with the caller-selected code page, not hardcoded 37.
+func TestReduceWithCodePage_IMMNameDecoding(t *testing.T) {
+	tIMM := [3]byte{0xD3, 0xAB, 0xCC}
+	build := func() []byte {
+		bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+		bpg := rawField(tBPG, ebcdicSpaces(8))
+		name := append([]byte{0x4A}, ebcdicSpaces(7)...)
+		imm := rawField(tIMM, name)
+		epg := rawField(tEPG, ebcdicSpaces(8))
+		edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+		var buf bytes.Buffer
+		for _, f := range [][]byte{bdt, bpg, imm, epg, edt} {
+			buf.Write(f)
+		}
+		return buf.Bytes()
+	}
+	cp500, err := afp.LookupCodePage(500)
+	if err != nil {
+		t.Fatalf("LookupCodePage(500): %v", err)
+	}
+	_, excls, err := ReduceWithCodePage(bytes.NewReader(build()), cp500)
+	if err != nil {
+		t.Fatalf("ReduceWithCodePage(500): %v", err)
+	}
+	if len(excls) != 1 {
+		t.Fatalf("got %d exclusions, want 1 (IMM)", len(excls))
+	}
+	if d := excls[0].Diagnostic(); !strings.Contains(d, "[") {
+		t.Errorf("diagnostic %q does not contain cp500-decoded name %q", d, "[")
+	}
+}
