@@ -1,7 +1,12 @@
 name: ci
 
 on:
+  # PR branch pushes are validated by the pull_request run below, which
+  # tests the merge commit (the actual merge result); the push trigger
+  # covers direct pushes to main. This yields exactly one run per push
+  # while never leaving the merged result untested.
   push:
+    branches: [main]
   pull_request:
 
 permissions:
