@@ -1,4 +1,3 @@
-// Package afptoline reduces AFP structures to line data.
 package afptoline
 
 import (
