@@ -184,14 +184,16 @@ func (t Triplet) Text() string {
 // decodes each field through the registry (including triplet paths), and
 // re-encodes, requiring byte-identical output per field. Any deviation —
 // unknown field, unknown triplet, re-encoding mismatch — returns an error.
-// It works for both naked and 5A-wrapped streams because SplitFields
-// normalizes framing before comparison.
+// It works for both naked and 5A-wrapped streams because Fields
+// normalizes framing before comparison, and it streams: fields are
+// decoded as they arrive rather than after the whole input materializes.
 func RoundTrip(r io.Reader) error {
-	fields, err := SplitFields(r)
-	if err != nil {
-		return fmt.Errorf("afp: RoundTrip: split: %w", err)
-	}
-	for i, fb := range fields {
+	i := 0
+	for sf, err := range Fields(r) {
+		if err != nil {
+			return fmt.Errorf("afp: RoundTrip: split: %w", err)
+		}
+		fb := sf.Data
 		f, err := DecodeField(fb)
 		if err != nil {
 			return fmt.Errorf("afp: RoundTrip: field %d: %w", i, err)
@@ -204,6 +206,7 @@ func RoundTrip(r io.Reader) error {
 				Reason:  "re-encode differs from input: round-trip gate failed",
 			}
 		}
+		i++
 	}
 	return nil
 }
