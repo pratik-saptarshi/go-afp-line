@@ -2,6 +2,8 @@
 package afptoline
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -28,6 +30,11 @@ const ptxTypeID = "D3EE9B"
 // immTypeID is Invoke Medium Map: the FormDef/PageDef reference point.
 const immTypeID = "D3ABCC"
 
+// DefaultMaxTextBytes bounds the total decoded text of one reduction, so a
+// control sequence that amplifies (e.g. RPS: one 8-byte sequence can expand
+// to 65535 bytes) cannot exhaust memory on a hostile stream.
+const DefaultMaxTextBytes = 1 << 20
+
 // Reduce walks a MO:DCA stream and produces a line.Document plus loud
 // exclusions for every out-of-subset construct encountered.
 //
@@ -41,8 +48,29 @@ const immTypeID = "D3ABCC"
 // accepted and noted (v1: parameters uninterpreted). Excluded fields become
 // line.Exclusion diagnostics via exclusionFor; truly unknown field types abort
 // per the decoder's abort-vs-diagnose policy.
+//
+// The total decoded text is bounded by DefaultMaxTextBytes (see
+// ReduceWithBudget): an RPS-heavy stream fails with afp.DecodeError rather
+// than expanding without limit.
 func Reduce(r io.Reader) (line.Document, []line.Exclusion, error) {
-	raws, err := afp.SplitFields(r)
+	return ReduceWithBudget(r, DefaultMaxTextBytes)
+}
+
+// ReduceWithBudget is Reduce with an explicit bound on the total decoded
+// text bytes of the document. A non-positive budget is rejected immediately,
+// before any input is read.
+func ReduceWithBudget(r io.Reader, maxTextBytes int) (line.Document, []line.Exclusion, error) {
+	if maxTextBytes <= 0 {
+		return line.Document{}, nil, fmt.Errorf("afptoline: non-positive text budget %d", maxTextBytes)
+	}
+	// Buffer the input once: SplitFields re-reads it, and the 5A-wrapped
+	// framing check below needs the raw stream start.
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return line.Document{}, nil, fmt.Errorf("afptoline: read input: %w", err)
+	}
+	wrapped := afp.IsWrapped(data)
+	raws, err := afp.SplitFields(bytes.NewReader(data))
 	if err != nil {
 		return line.Document{}, nil, err
 	}
@@ -51,8 +79,16 @@ func Reduce(r io.Reader) (line.Document, []line.Exclusion, error) {
 		return line.Document{}, nil, err
 	}
 
-	st := &reduceState{cp: cp}
+	st := &reduceState{cp: cp, textLeft: maxTextBytes}
 	for _, raw := range raws {
+		// Each SplitFields entry is the complete encoded field (starting at
+		// its introducer). On 5A-wrapped streams SplitFields strips the
+		// one-byte record marker, so add it back: st.off must be the true
+		// wire offset, not the stripped length.
+		st.off += len(raw)
+		if wrapped {
+			st.off++
+		}
 		f, err := afp.DecodeField(raw)
 		if err != nil {
 			return line.Document{}, st.excls, err
@@ -73,14 +109,16 @@ func Reduce(r io.Reader) (line.Document, []line.Exclusion, error) {
 
 // reduceState carries the structural walk: document/page/group nesting.
 type reduceState struct {
-	cp    afp.CodePage
-	pages []line.Page
-	page  *line.Page // open page under construction, nil when outside a page
-	excls []line.Exclusion
-	inDoc bool
-	bng   int // named page group depth
-	bag   int // active environment group depth
-	bpt   int // presentation text object depth
+	cp       afp.CodePage
+	pages    []line.Page
+	page     *line.Page // open page under construction, nil when outside a page
+	excls    []line.Exclusion
+	inDoc    bool
+	bng      int // named page group depth
+	bag      int // active environment group depth
+	bpt      int // presentation text object depth
+	textLeft int // decoded text bytes still within budget
+	off      int // cumulative stream offset through the field currently being visited
 }
 
 func (st *reduceState) fail(id string, reason string) error {
@@ -194,10 +232,27 @@ func (st *reduceState) visitPTX(t *afp.RawField) error {
 	if st.page == nil {
 		return st.fail(t.TypeID(), "PTX outside page")
 	}
-	runs, err := DecodePTOCA(t, st.cp)
+	runs, err := decodePTOCA(t, st.cp, st.textLeft)
 	if err != nil {
+		// The decoder's fail-fast budget error carries no field context;
+		// attach the offending PTX's identity and true wire offset here.
+		var derr afp.DecodeError
+		if errors.As(err, &derr) && derr.Reason == budgetExceededReason {
+			return afp.DecodeError{FieldID: t.TypeID(), Offset: st.off, Reason: derr.Reason}
+		}
 		return err
 	}
+	// Bound amplification: control sequences such as RPS can expand a small
+	// payload into many bytes. The check runs against the remaining document
+	// budget per PTX, so an attacker cannot bypass it with many small fields.
+	var n int
+	for _, run := range runs {
+		n += len(run.Text)
+	}
+	if n > st.textLeft {
+		return afp.DecodeError{FieldID: t.TypeID(), Offset: st.off, Reason: budgetExceededReason}
+	}
+	st.textLeft -= n
 	for _, run := range runs {
 		fontID, err := fontIDForLID(run.FontID)
 		if err != nil {

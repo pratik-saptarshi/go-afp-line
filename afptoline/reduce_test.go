@@ -335,3 +335,206 @@ func TestReduce_BPTMustNotCrossEPG(t *testing.T) {
 		t.Fatalf("error %q does not name EPG", err)
 	}
 }
+
+// errReader fails on Read: it proves ReduceWithBudget rejects a non-positive
+// budget before touching the input at all.
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, errors.New("must not read") }
+
+// TestReduceWithBudget_RPSAmplification: an RPS-heavy PTX must not expand
+// past the decoded-text budget (amplification DoS). RLENGTH is a uint16, so
+// one sequence expands to at most 65535 bytes; four RLENGTH=2000 sequences
+// here decode to 8000 UTF-8 bytes against a 4096 budget.
+func TestReduceWithBudget_RPSAmplification(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	var payload []byte
+	for i := 0; i < 4; i++ {
+		// RPS: RLENGTH(2B) = 2000, RPTDATA = "A" (EBCDIC 0xC1).
+		payload = append(payload, seq(0xEE, 0x07, 0xD0, 0xC1)...)
+	}
+	ptx := rawField(tPTX, payload)
+	epg := rawField(tEPG, ebcdicSpaces(8))
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+
+	var buf bytes.Buffer
+	for _, f := range [][]byte{bdt, bpg, ptx, epg, edt} {
+		buf.Write(f)
+	}
+	// Per the off-update rule (off advances before each visit), the error
+	// offset is the cumulative stream offset through the offending PTX —
+	// it identifies the field unambiguously.
+	wantOffset := len(bdt) + len(bpg) + len(ptx)
+
+	_, _, err := ReduceWithBudget(&buf, 4096)
+	if err == nil {
+		t.Fatalf("ReduceWithBudget accepted an RPS stream expanding to 8000 bytes under a 4096 budget")
+	}
+	if !strings.Contains(err.Error(), "decoded text budget exceeded") {
+		t.Fatalf("error = %q, want it to contain %q", err.Error(), "decoded text budget exceeded")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+	}
+	if derr.FieldID != "D3EE9B" {
+		t.Errorf("FieldID = %q, want D3EE9B", derr.FieldID)
+	}
+	if derr.Offset != wantOffset {
+		t.Errorf("Offset = %d, want %d (cumulative offset through the offending PTX)", derr.Offset, wantOffset)
+	}
+}
+
+// TestReduceWithBudget_NonPositiveBudget: a zero or negative budget is an
+// immediate error, before any input is read.
+func TestReduceWithBudget_NonPositiveBudget(t *testing.T) {
+	for _, budget := range []int{0, -1} {
+		_, _, err := ReduceWithBudget(errReader{}, budget)
+		if err == nil {
+			t.Fatalf("ReduceWithBudget(r, %d): got nil error", budget)
+		}
+		if !strings.Contains(err.Error(), "non-positive text budget") {
+			t.Fatalf("ReduceWithBudget(r, %d): error = %q, want %q", budget, err.Error(), "non-positive text budget")
+		}
+	}
+}
+
+// TestReduceWithBudget_UnderBudget: a small valid document under the budget
+// reduces exactly as before.
+func TestReduceWithBudget_UnderBudget(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	ptx := rawField(tPTX, trn(0xC1))
+	epg := rawField(tEPG, ebcdicSpaces(8))
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+
+	var buf bytes.Buffer
+	for _, f := range [][]byte{bdt, bpg, ptx, epg, edt} {
+		buf.Write(f)
+	}
+	doc, _, err := ReduceWithBudget(&buf, 4096)
+	if err != nil {
+		t.Fatalf("ReduceWithBudget: %v", err)
+	}
+	if len(doc.Pages) != 1 || len(doc.Pages[0].Runs) != 1 {
+		t.Fatalf("doc has %d pages / %d runs, want 1 page with 1 run", len(doc.Pages), len(doc.Pages[0].Runs))
+	}
+	if got := doc.Pages[0].Runs[0].Text; got != "A" {
+		t.Errorf("text = %q, want %q", got, "A")
+	}
+}
+
+// TestReduceWithBudget_CumulativeAcrossPTX: the budget is document-scoped.
+// Two PTX fields that are each under the budget on their own still fail when
+// their combined decoded text exceeds it; the error names the second PTX's
+// offset.
+func TestReduceWithBudget_CumulativeAcrossPTX(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	// RPS: RLENGTH(2B) = 3000, RPTDATA = "A".
+	ptx1 := rawField(tPTX, seq(0xEE, 0x0B, 0xB8, 0xC1))
+	ptx2 := rawField(tPTX, seq(0xEE, 0x0B, 0xB8, 0xC1))
+	epg := rawField(tEPG, ebcdicSpaces(8))
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+
+	var buf bytes.Buffer
+	for _, f := range [][]byte{bdt, bpg, ptx1, ptx2, epg, edt} {
+		buf.Write(f)
+	}
+	wantOffset := len(bdt) + len(bpg) + len(ptx1) + len(ptx2)
+
+	_, _, err := ReduceWithBudget(&buf, 4096)
+	if err == nil {
+		t.Fatalf("ReduceWithBudget accepted two PTX fields decoding to 6000 bytes under a 4096 budget")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) || derr.Offset != wantOffset {
+		t.Fatalf("error = %v (%T), want afp.DecodeError at offset %d", err, err, wantOffset)
+	}
+	if derr.FieldID != "D3EE9B" {
+		t.Errorf("FieldID = %q, want D3EE9B", derr.FieldID)
+	}
+	if derr.Reason != "decoded text budget exceeded" {
+		t.Errorf("Reason = %q, want %q", derr.Reason, "decoded text budget exceeded")
+	}
+}
+
+// TestReduceWithBudget_DefaultBudget: the default budget is 1 MiB, as the
+// panel contract fixes.
+func TestReduceWithBudget_DefaultBudget(t *testing.T) {
+	if DefaultMaxTextBytes != 1<<20 {
+		t.Errorf("DefaultMaxTextBytes = %d, want %d", DefaultMaxTextBytes, 1<<20)
+	}
+}
+
+// TestReduceWithBudget_ExactBudget: a document decoding to exactly the
+// budget passes; budget+1 fails. ASCII TRN payloads, so source bytes ==
+// decoded bytes and the boundary is exact.
+func TestReduceWithBudget_ExactBudget(t *testing.T) {
+	build := func(n int) []byte {
+		bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+		bpg := rawField(tBPG, ebcdicSpaces(8))
+		as := make([]byte, n)
+		for i := range as {
+			as[i] = 0xC1 // EBCDIC "A"
+		}
+		ptx := rawField(tPTX, trn(as...))
+		epg := rawField(tEPG, ebcdicSpaces(8))
+		edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+		var buf bytes.Buffer
+		for _, f := range [][]byte{bdt, bpg, ptx, epg, edt} {
+			buf.Write(f)
+		}
+		return buf.Bytes()
+	}
+	if _, _, err := ReduceWithBudget(bytes.NewReader(build(64)), 64); err != nil {
+		t.Fatalf("ReduceWithBudget at exactly the budget: %v", err)
+	}
+	_, _, err := ReduceWithBudget(bytes.NewReader(build(65)), 64)
+	if err == nil {
+		t.Fatal("ReduceWithBudget accepted budget+1 decoded bytes")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) || derr.Reason != budgetExceededReason {
+		t.Fatalf("error = %v (%T), want afp.DecodeError with budget reason", err, err)
+	}
+}
+
+// TestReduceWithBudget_WrappedOffset: on 5A-wrapped streams the budget
+// error's offset is the true wire offset — SplitFields strips the 5A record
+// marker, so each field contributes its bytes plus one framing byte through
+// the offending PTX.
+func TestReduceWithBudget_WrappedOffset(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	// RPS: RLENGTH = 2000, RPTDATA = "A" — expands past a 1024 budget.
+	ptx := rawField(tPTX, seq(0xEE, 0x07, 0xD0, 0xC1))
+	epg := rawField(tEPG, ebcdicSpaces(8))
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+
+	var buf bytes.Buffer
+	for _, f := range [][]byte{bdt, bpg, ptx, epg, edt} {
+		buf.WriteByte(0x5A)
+		buf.Write(f)
+	}
+	wantOffset := (len(bdt) + 1) + (len(bpg) + 1) + (len(ptx) + 1)
+
+	_, _, err := ReduceWithBudget(&buf, 1024)
+	if err == nil {
+		t.Fatal("ReduceWithBudget accepted an RPS stream expanding past the budget on a 5A-wrapped stream")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+	}
+	if derr.FieldID != "D3EE9B" {
+		t.Errorf("FieldID = %q, want D3EE9B", derr.FieldID)
+	}
+	if derr.Offset != wantOffset {
+		t.Errorf("Offset = %d, want %d (true wire offset through the offending PTX)", derr.Offset, wantOffset)
+	}
+	if derr.Reason != budgetExceededReason {
+		t.Errorf("Reason = %q, want %q", derr.Reason, budgetExceededReason)
+	}
+}

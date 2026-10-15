@@ -144,11 +144,14 @@ func DecodeIntroducer(b []byte) (Introducer, error) {
 	return in, nil
 }
 
-// isWrapped reports whether data uses 5A-wrapped records: a leading 0x5A
+// IsWrapped reports whether data uses 5A-wrapped records: a leading 0x5A
 // byte, a plausible record length, and the D3 class code where the SFID
 // belongs. Real streams are homogeneous; the framing is detected once from
 // the first record so a naked field with a 0x5Axx length is not misread.
-func isWrapped(data []byte) bool {
+// SplitFields applies this same check before stripping the one-byte framing
+// marker from each field; callers that need true wire offsets use it to
+// account for the stripped byte.
+func IsWrapped(data []byte) bool {
 	if len(data) < 6 || data[0] != 0x5A {
 		return false
 	}
@@ -167,7 +170,7 @@ func SplitFields(r io.Reader) ([][]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("afp: SplitFields: %w", err)
 	}
-	wrapped := isWrapped(data)
+	wrapped := IsWrapped(data)
 	var fields [][]byte
 	off := 0
 	for off < len(data) {
