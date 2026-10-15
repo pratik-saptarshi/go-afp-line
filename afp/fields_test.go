@@ -298,6 +298,45 @@ func TestFields_ErrorWithPrefixBytes(t *testing.T) {
 	}
 }
 
+// eofWithBytesReader returns all remaining bytes together with io.EOF on
+// every Read: legal per the io.Reader contract (n > 0 with EOF) and common
+// in practice. A complete field delivered this way must be accepted, not
+// reported as truncated.
+type eofWithBytesReader struct {
+	data []byte
+}
+
+func (r *eofWithBytesReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, io.EOF
+}
+
+// TestFields_EOFWithFinalBodyBytes: EOF arriving with the field's final
+// body bytes is not truncation — the complete field is yielded and the
+// stream then ends cleanly.
+func TestFields_EOFWithFinalBodyBytes(t *testing.T) {
+	field := []byte{0x00, 0x08, 0xD3, 0xA8, 0xAD, 0x00, 0x00, 0x00} // minimal BNG
+	var fields [][]byte
+	var gotErr error
+	for f, err := range Fields(&eofWithBytesReader{data: append([]byte{}, field...)}) {
+		if err != nil {
+			gotErr = err
+			continue
+		}
+		fields = append(fields, f.Data)
+	}
+	if gotErr != nil {
+		t.Fatalf("Fields error = %v, want clean end after a complete field", gotErr)
+	}
+	if len(fields) != 1 || !bytes.Equal(fields[0], field) {
+		t.Fatalf("Fields yielded %d fields, want the 1 complete field", len(fields))
+	}
+}
+
 // scriptedErrReader serves clean full reads until limit bytes, then returns
 // err together with the next chunk's bytes: the bytes must be processed
 // first (a complete field is yielded) and the error surfaces afterwards,

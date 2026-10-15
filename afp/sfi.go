@@ -321,16 +321,22 @@ func fieldsOp(r io.Reader, op string) iter.Seq2[StreamField, error] {
 			for have < flen {
 				m, rerr := stream.Read(field[have:flen])
 				have += m
-				if rerr != nil {
-					if rerr == io.EOF {
+				if rerr == io.EOF {
+					if have < flen {
 						fail(DecodeError{
 							Kind:   KindStructure,
 							Offset: fieldStart,
 							Reason: fmt.Sprintf("truncated field: need %d bytes, have %d", flen, have),
 						})
-					} else {
-						readErr(rerr)
+						return
 					}
+					// EOF arrived with the final body bytes: the field is
+					// complete (a legal io.Reader may return n > 0 with
+					// EOF). Fall through to introducer validation.
+					break
+				}
+				if rerr != nil {
+					readErr(rerr)
 					return
 				}
 			}
