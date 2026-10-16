@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/pratik-saptarshi/go-afp-line/afp"
 )
@@ -114,6 +115,11 @@ func (st *ptocaState) flush() error {
 		return nil
 	}
 	text := st.cp.Decode(st.cur)
+	// NEL (U+0085, EBCDIC 0x15) is the mainframe newline. It has no WinAnsi
+	// encoding, but rejecting it fails legitimate documents; map to space so
+	// text stays readable, searchable, and word-broken. (v0.x: true line-break
+	// semantics are a future design.)
+	text = strings.ReplaceAll(text, "", " ")
 	st.runs = append(st.runs, Run{
 		Text:   text,
 		X:      st.curX,

@@ -1197,3 +1197,23 @@ func TestReduce_VisitRawUnknownContractedField(t *testing.T) {
 		}
 	}
 }
+
+// TestReduce_NELAccepted: a PTX containing NEL must convert, not fail with
+// a KindEncoding C1 rejection.
+func TestReduce_NELAccepted(t *testing.T) {
+	bdt, edt := docFields()
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	ptx := rawField(tPTX, trn(0xC8, 0x15, 0xC8))
+	epg := rawField(tEPG, ebcdicSpaces(8))
+	var buf bytes.Buffer
+	for _, f := range [][]byte{bdt, bpg, ptx, epg, edt} {
+		buf.Write(f)
+	}
+	doc, _, err := Reduce(&buf)
+	if err != nil {
+		t.Fatalf("Reduce: %v", err)
+	}
+	if got := doc.Pages[0].Runs[0].Text; got != "H H" {
+		t.Errorf("text = %q, want %q", got, "H H")
+	}
+}

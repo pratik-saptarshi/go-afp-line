@@ -635,3 +635,17 @@ func TestDecodePTOCA_RPSShortParam(t *testing.T) {
 		t.Errorf("FieldID = %q, want D3EE9B", derr.FieldID)
 	}
 }
+
+// TestDecodePTOCA_NELMapsToSpace: EBCDIC NEL (0x15) decodes to U+0085, which
+// has no WinAnsi encoding; instead of C1-rejecting, the decoder maps it to
+// a space so documents containing newlines convert.
+func TestDecodePTOCA_NELMapsToSpace(t *testing.T) {
+	// 0xC8='H' (CP037), 0x15=NEL→U+0085.
+	runs, err := decodePTOCA(ptxField(trn(0xC8, 0x15, 0xC8)), testCP(t), -1, nil)
+	if err != nil {
+		t.Fatalf("decodePTOCA: %v", err)
+	}
+	if len(runs) != 1 || runs[0].Text != "H H" {
+		t.Fatalf("got %q, want %q", runs[0].Text, "H H")
+	}
+}
