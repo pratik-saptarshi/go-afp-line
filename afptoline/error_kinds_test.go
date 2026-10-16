@@ -233,4 +233,12 @@ func TestReduce_CoordinateBoundsErrorIsTyped(t *testing.T) {
 	if derr.Kind != afp.KindValidation {
 		t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindValidation)
 	}
+	// The bounds failure must name the offending PTX field, not report
+	// a document-level offset 0.
+	if derr.FieldID != "D3EE9B" {
+		t.Errorf("FieldID = %q, want D3EE9B", derr.FieldID)
+	}
+	if want := len(bdt) + len(bpg); derr.Offset != want {
+		t.Errorf("Offset = %d, want %d (PTX field start)", derr.Offset, want)
+	}
 }

@@ -126,11 +126,11 @@ func reduceWithBudgetAndCodePage(r io.Reader, maxTextBytes int, cp afp.CodePage)
 		return line.Document{}, st.excls, err
 	}
 	doc := line.Document{Pages: st.pages}
-	// Coordinate bounds are a reducer-level validation: the document is
-	// well-formed but a run violates the contracted coordinate range, so
-	// surface it as a typed DecodeError (KindValidation, matching the
-	// sibling validation failures in visitPTX) rather than the untyped
-	// line.ValidationError.
+	// Final validation safety net: run coordinate bounds are already
+	// enforced per-PTX in visitPTX (with the offending field's identity),
+	// so this catches page-dimension violations and anything else that
+	// slipped through. Surface it as a typed DecodeError (KindValidation)
+	// rather than the untyped line.ValidationError.
 	if err := doc.Validate(); err != nil {
 		var verr line.ValidationError
 		if errors.As(err, &verr) {
@@ -403,13 +403,22 @@ func (st *reduceState) visitPTX(t *afp.RawField) error {
 		if err != nil {
 			return err
 		}
-		st.page.Runs = append(st.page.Runs, line.TextRun{
+		tr := line.TextRun{
 			Text:     run.Text,
 			X:        run.X,
 			Y:        flipY(run.Y, st.page.Height),
 			FontSize: defaultFontSize,
 			FontID:   fontID,
-		})
+		}
+		// Coordinate bounds are validated per-PTX (not only at the end
+		// of Reduce) so the error names the offending PTX field instead
+		// of reporting a document-level offset 0. FontSize is the
+		// constant default, FontID was just resolved, and C1 was
+		// rejected above, so any failure here is a coordinate bound.
+		if verr := tr.Validate(); verr != nil {
+			return afp.DecodeError{FieldID: t.TypeID(), Offset: st.off, Kind: afp.KindValidation, Reason: verr.Error()}
+		}
+		st.page.Runs = append(st.page.Runs, tr)
 	}
 	return nil
 }
