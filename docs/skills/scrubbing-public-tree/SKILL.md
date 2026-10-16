@@ -37,11 +37,16 @@ Work through these in order. Each step ends with a checkable result.
 
 ## Implementation
 
-**Scrub patterns** (extend per repo; these are the common ones). Search all text files, excluding VCS and build output:
+**Scrub patterns** (extend per repo; these are the common ones). Search all text files, excluding VCS and build output. Exclude skill files — they document these patterns literally and will always self-match:
 ```bash
-EXCL="--exclude-dir=.git --exclude-dir=target --exclude-dir=node_modules --exclude-dir=vendor --exclude-dir=dist"
+EXCL="--exclude-dir=.git --exclude-dir=target --exclude-dir=node_modules --exclude-dir=vendor --exclude-dir=dist --exclude=SKILL.md"
 grep -rn -E '/home/|/root/|/tmp/|/Users/' . $EXCL
 grep -rniE 'cloudbot|neo-green' . $EXCL
+```
+In repos with gitignored local material (evidence dirs, scratch checkouts), scope verification to tracked files so local-only hits don't mask real ones (no output means clean):
+```bash
+git grep -nE '/home/|/root/|/tmp/|/Users/' -- ':!**/SKILL.md'
+git grep -niE 'cloudbot|neo-green' -- ':!**/SKILL.md'
 ```
 
 **Scrub, don't just delete:** when a machine path carries meaning ("build output lives at /home/hatch/build/out"), generalize it to a neutral description ("the configured build output directory") rather than deleting the sentence — the information matters, the absolute path doesn't.
