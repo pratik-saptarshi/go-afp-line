@@ -1217,3 +1217,87 @@ func TestReduce_NELAccepted(t *testing.T) {
 		t.Errorf("text = %q, want %q", got, "H H")
 	}
 }
+
+// TestReduce_PTXStatePersistsAcrossFields: a presentation text object split
+// across PTX fields is one continuous PTOCA stream — the second PTX's runs
+// start where the first PTX's text ended, not at X=0.
+func TestReduce_PTXStatePersistsAcrossFields(t *testing.T) {
+	bdt, edt := docFields()
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	bpt := rawField(tBPT, nil)
+	ptx1 := rawField(tPTX, trn(0xC8, 0xC5)) // "HE"
+	ptx2 := rawField(tPTX, trn(0xE6, 0xD6)) // "WO"
+	ept := rawField(tEPT, nil)
+	epg := rawField(tEPG, ebcdicSpaces(8))
+
+	var buf bytes.Buffer
+	for _, f := range [][]byte{bdt, bpg, bpt, ptx1, ptx2, ept, epg, edt} {
+		buf.Write(f)
+	}
+	doc, _, err := Reduce(&buf)
+	if err != nil {
+		t.Fatalf("Reduce: %v", err)
+	}
+	// "HE" advances 2 chars * 6pt = 12pt, so "WO" starts at X=12.
+	// checkRuns asserts text byte-exact, guarding the runs-slice aliasing
+	// in the implementation (both runs' text must survive later decodes).
+	checkRuns(t, 1, doc.Pages[0].Runs, []wantRun{
+		{"HE", 0, 792, "FIX-MONO-10", 10},
+		{"WO", 12, 792, "FIX-MONO-10", 10},
+	})
+}
+
+// TestReduce_BPTResetsPTXState: a new BPT starts a fresh PTOCA stream —
+// the second text object's first run starts at X=0.
+func TestReduce_BPTResetsPTXState(t *testing.T) {
+	bdt, edt := docFields()
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	bpt := rawField(tBPT, nil)
+	ptx1 := rawField(tPTX, trn(0xC8, 0xC5)) // "HE"
+	ept := rawField(tEPT, nil)
+	ptx2 := rawField(tPTX, trn(0xE6, 0xD6)) // "WO"
+	epg := rawField(tEPG, ebcdicSpaces(8))
+
+	var buf bytes.Buffer
+	for _, f := range [][]byte{bdt, bpg, bpt, ptx1, ept, bpt, ptx2, ept, epg, edt} {
+		buf.Write(f)
+	}
+	doc, _, err := Reduce(&buf)
+	if err != nil {
+		t.Fatalf("Reduce: %v", err)
+	}
+	checkRuns(t, 1, doc.Pages[0].Runs, []wantRun{
+		{"HE", 0, 792, "FIX-MONO-10", 10},
+		{"WO", 0, 792, "FIX-MONO-10", 10},
+	})
+}
+
+// TestReduce_BPGResetsPTXState: a page boundary clears the PTOCA stream —
+// a new page is a new coordinate space, so its first run starts at X=0.
+func TestReduce_BPGResetsPTXState(t *testing.T) {
+	bdt, edt := docFields()
+	bpg1 := rawField(tBPG, ebcdicSpaces(8))
+	ptx1 := rawField(tPTX, trn(0xC8, 0xC5)) // "HE"
+	epg1 := rawField(tEPG, ebcdicSpaces(8))
+	bpg2 := rawField(tBPG, ebcdicSpaces(8))
+	ptx2 := rawField(tPTX, trn(0xE6, 0xD6)) // "WO"
+	epg2 := rawField(tEPG, ebcdicSpaces(8))
+
+	var buf bytes.Buffer
+	for _, f := range [][]byte{bdt, bpg1, ptx1, epg1, bpg2, ptx2, epg2, edt} {
+		buf.Write(f)
+	}
+	doc, _, err := Reduce(&buf)
+	if err != nil {
+		t.Fatalf("Reduce: %v", err)
+	}
+	if len(doc.Pages) != 2 {
+		t.Fatalf("got %d pages, want 2", len(doc.Pages))
+	}
+	checkRuns(t, 1, doc.Pages[0].Runs, []wantRun{
+		{"HE", 0, 792, "FIX-MONO-10", 10},
+	})
+	checkRuns(t, 2, doc.Pages[1].Runs, []wantRun{
+		{"WO", 0, 792, "FIX-MONO-10", 10},
+	})
+}
