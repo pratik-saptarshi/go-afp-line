@@ -151,6 +151,11 @@ type reduceState struct {
 	groups   []groupKind // open groups, innermost last; rejects misnesting
 	textLeft int         // decoded text bytes still within budget
 	off      int         // cumulative stream offset through the field currently being visited
+	// ptxSt is the PTOCA decoder state carried across PTX fields: a text
+	// object split across PTX records is one continuous stream. Reset on
+	// BPT, discarded on EPT, cleared on BPG (new page = new coordinate
+	// space); a PTX outside any BPT lazily starts (and keeps) a stream.
+	ptxSt *ptocaState
 }
 
 // groupKind identifies a group delimiter on the pairing stack. BPG rides
@@ -236,6 +241,7 @@ func (st *reduceState) visit(f afp.Field) error {
 		w, h := resolvePageGeometry()
 		st.page = &line.Page{Number: len(st.pages) + 1, Width: w, Height: h}
 		st.openGroup(grpBPG)
+		st.ptxSt = nil // new page = new coordinate space
 		return nil
 	case *afp.EPG:
 		if st.page == nil {
@@ -322,6 +328,7 @@ func (st *reduceState) visitRaw(t *afp.RawField) error {
 			return st.fail(id, afp.KindStructure, "BPT outside page or nested")
 		}
 		st.openGroup(grpBPT)
+		st.ptxSt = &ptocaState{} // new text object = new PTOCA stream
 	case "D3A99B": // EPT
 		// Pairing: EPT closes the text object, so it must be innermost —
 		// a BAG opened inside it is still open.
@@ -335,6 +342,7 @@ func (st *reduceState) visitRaw(t *afp.RawField) error {
 			return st.fail(id, afp.KindStructure, "EPT without BPT")
 		}
 		st.closeGroup() // grpBPT
+		st.ptxSt = nil  // text object closed: discard the stream
 	case "D3AB8A", // MCF: v1 notes the mapping; fixtures carry none
 		"D3B19B": // PTD: v1 notes the descriptor; fixtures carry no AEG
 		if !st.inDoc {
@@ -346,11 +354,31 @@ func (st *reduceState) visitRaw(t *afp.RawField) error {
 	return nil
 }
 
+// decodePTX decodes one PTX field's payload through the persistent PTOCA
+// decoder state (see the ptxSt field comment), returning only the runs
+// appended by this field.
+func (st *reduceState) decodePTX(t *afp.RawField) ([]Run, error) {
+	if st.ptxSt == nil {
+		st.ptxSt = &ptocaState{}
+	}
+	ps := st.ptxSt
+	ps.cp = st.cp
+	ps.adv = st.advanceFunc()
+	ps.remaining = st.textLeft // per-PTX budget, reset every field — never carried
+	n := len(ps.runs)
+	if err := ps.decode(t.Data); err != nil {
+		return nil, err
+	}
+	runs := ps.runs[n:]
+	ps.runs = nil
+	return runs, nil
+}
+
 func (st *reduceState) visitPTX(t *afp.RawField) error {
 	if st.page == nil {
 		return st.fail(t.TypeID(), afp.KindStructure, "PTX outside page")
 	}
-	runs, err := decodePTOCA(t, st.cp, st.textLeft, st.advanceFunc())
+	runs, err := st.decodePTX(t)
 	if err != nil {
 		var derr afp.DecodeError
 		if errors.As(err, &derr) {

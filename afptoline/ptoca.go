@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/pratik-saptarshi/go-afp-line/afp"
 )
@@ -114,6 +115,11 @@ func (st *ptocaState) flush() error {
 		return nil
 	}
 	text := st.cp.Decode(st.cur)
+	// NEL (U+0085, EBCDIC 0x15) is the mainframe newline. It has no WinAnsi
+	// encoding, but rejecting it fails legitimate documents; map to space so
+	// text stays readable, searchable, and word-broken. (v0.x: true line-break
+	// semantics are a future design.)
+	text = strings.ReplaceAll(text, "\u0085", " ")
 	st.runs = append(st.runs, Run{
 		Text:   text,
 		X:      st.curX,
@@ -203,7 +209,18 @@ func decodePTOCA(f afp.Field, cp afp.CodePage, maxBytes int, adv advanceFunc) ([
 		return nil, afp.DecodeError{FieldID: id, Kind: afp.KindValidation, Reason: "DecodePTOCA needs a PTX field (D3EE9B)"}
 	}
 	st := &ptocaState{cp: cp, remaining: maxBytes, adv: adv}
-	data := rf.Data
+	if err := st.decode(rf.Data); err != nil {
+		return nil, err
+	}
+	return st.runs, nil
+}
+
+// decode runs the PTOCA decode loop over data, appending decoded runs to
+// st.runs and flushing any pending text at the end. It operates on the
+// receiver's existing state (position, SIA, font, suppression), so callers
+// may reuse one ptocaState across multiple PTX payloads to decode a
+// continuous stream.
+func (st *ptocaState) decode(data []byte) error {
 	pos := 0
 	for pos < len(data) {
 		if data[pos] == 0x2B && pos+1 < len(data) && data[pos+1] == 0xD3 {
@@ -211,7 +228,7 @@ func decodePTOCA(f afp.Field, cp afp.CodePage, maxBytes int, adv advanceFunc) ([
 			var err error
 			pos, chained, err = st.execUnchained(data, pos)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			for chained {
 				if pos >= len(data) {
@@ -219,7 +236,7 @@ func decodePTOCA(f afp.Field, cp afp.CodePage, maxBytes int, adv advanceFunc) ([
 				}
 				pos, chained, err = st.execChained(data, pos)
 				if err != nil {
-					return nil, err
+					return err
 				}
 			}
 			continue
@@ -234,14 +251,14 @@ func decodePTOCA(f afp.Field, cp afp.CodePage, maxBytes int, adv advanceFunc) ([
 		}
 		st.markStart()
 		if err := st.text(data[pos:end]); err != nil {
-			return nil, err
+			return err
 		}
 		pos = end
 	}
 	if err := st.flush(); err != nil {
-		return nil, err
+		return err
 	}
-	return st.runs, nil
+	return nil
 }
 
 // execUnchained parses one unchained control sequence at data[pos] (2B D3
