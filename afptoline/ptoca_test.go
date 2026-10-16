@@ -612,3 +612,25 @@ func TestDecodePTOCA_RPSBudgetIsCumulative(t *testing.T) {
 		t.Errorf("Kind = %q, want %q (decoder fail-fast, not a later check)", derr.Kind, afp.KindBudget)
 	}
 }
+
+// TestDecodePTOCA_RPSShortParam: an RPS control sequence with a single
+// parameter byte (RLENGTH needs 2) must fail loudly via seqLenError
+// (KindStructure), not panic or misdecode. Guards the len(params) < 2
+// check in doRPS.
+func TestDecodePTOCA_RPSShortParam(t *testing.T) {
+	payload := seq(0xEE, 0xFF) // RPS with 1 param byte; RLENGTH needs 2.
+	_, err := decodePTOCA(ptxField(payload), testCP(t), DefaultMaxTextBytes, nil)
+	if err == nil {
+		t.Fatal("decodePTOCA accepted a 1-byte RPS parameter")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+	}
+	if derr.Kind != afp.KindStructure {
+		t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindStructure)
+	}
+	if derr.FieldID != "D3EE9B" {
+		t.Errorf("FieldID = %q, want D3EE9B", derr.FieldID)
+	}
+}
