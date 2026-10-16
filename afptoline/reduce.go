@@ -126,7 +126,16 @@ func reduceWithBudgetAndCodePage(r io.Reader, maxTextBytes int, cp afp.CodePage)
 		return line.Document{}, st.excls, err
 	}
 	doc := line.Document{Pages: st.pages}
+	// Coordinate bounds are a reducer-level validation: the document is
+	// well-formed but a run violates the contracted coordinate range, so
+	// surface it as a typed DecodeError (KindValidation, matching the
+	// sibling validation failures in visitPTX) rather than the untyped
+	// line.ValidationError.
 	if err := doc.Validate(); err != nil {
+		var verr line.ValidationError
+		if errors.As(err, &verr) {
+			return line.Document{}, st.excls, afp.DecodeError{Kind: afp.KindValidation, Reason: verr.Error()}
+		}
 		return line.Document{}, st.excls, err
 	}
 	return doc, st.excls, nil
@@ -343,15 +352,20 @@ func (st *reduceState) visitPTX(t *afp.RawField) error {
 	}
 	runs, err := decodePTOCA(t, st.cp, st.textLeft, st.advanceFunc())
 	if err != nil {
-		// The decoder's fail-fast budget error carries no field context;
-		// attach the offending PTX's identity and true wire offset here.
-		// Advance errors (unmapped font, bad width) likewise carry no
-		// FieldID; every other error reachable through visitPTX sets one
-		// (the decoder's own errors carry FieldID "D3EE9B"), so empty is a
-		// reliable discriminator on this path.
 		var derr afp.DecodeError
-		if errors.As(err, &derr) && (derr.Kind == afp.KindBudget || derr.FieldID == "") {
-			return afp.DecodeError{FieldID: t.TypeID(), Offset: st.off, Kind: derr.Kind, Reason: derr.Reason}
+		if errors.As(err, &derr) {
+			if derr.FieldID == "" || derr.Kind == afp.KindBudget {
+				// Budget and advance errors carry no decoder-local offset
+				// to preserve (zero, or st.off already via fontIDForLID);
+				// attribute them to the offending PTX.
+				return afp.DecodeError{FieldID: t.TypeID(), Offset: st.off, Kind: derr.Kind, Reason: derr.Reason}
+			}
+			// The decoder's own errors (FieldID "D3EE9B") carry
+			// decoder-local offsets relative to the PTX payload; rebase
+			// them to stream-relative. (Threading the introducer length
+			// into the rebase is CODEX-F01, deferred.)
+			derr.Offset += st.off
+			return derr
 		}
 		return err
 	}

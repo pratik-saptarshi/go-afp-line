@@ -157,3 +157,61 @@ func TestReduce_FailSitesCarryTrueOffsets(t *testing.T) {
 		})
 	}
 }
+
+// TestReduce_PTOCADecoderErrorOffsetRebased: a PTOCA decoder error carries
+// a decoder-local offset (relative to the PTX payload); visitPTX must
+// rebase it by the PTX field's stream start offset so DecodeError.Offset
+// is stream-relative. Guards the st.off + derr.Offset rebase in visitPTX.
+func TestReduce_PTOCADecoderErrorOffsetRebased(t *testing.T) {
+	bdt, edt := docFields()
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	// Truncated chained introducer: decoder-local offset 5 (see
+	// TestDecodePTOCA_ErrorPaths).
+	ptx := rawField(tPTX, append(seq(0xF3, 0x05), 0x05))
+	epg := rawField(tEPG, ebcdicSpaces(8))
+
+	derr := decodeErr(t, bdt, bpg, ptx, epg, edt)
+	if derr.Kind != afp.KindStructure {
+		t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindStructure)
+	}
+	if derr.FieldID != "D3EE9B" {
+		t.Errorf("FieldID = %q, want D3EE9B", derr.FieldID)
+	}
+	// Stream-relative: PTX field start + decoder-local offset 5.
+	if want := len(bdt) + len(bpg) + 5; derr.Offset != want {
+		t.Errorf("Offset = %d, want %d (PTX field start + decoder-local offset 5)", derr.Offset, want)
+	}
+}
+
+// TestReduce_CoordinateBoundsErrorIsTyped: a run whose X exceeds
+// MaxCoordinate must fail Reduce as a typed afp.DecodeError
+// (KindValidation), not an untyped line.ValidationError.
+func TestReduce_CoordinateBoundsErrorIsTyped(t *testing.T) {
+	bdt, edt := docFields()
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	// 9 × RMI(+32767 L-units) = 294903 L-units = 14745.15pt > MaxCoordinate
+	// (14400pt). The following run's X is out of bounds.
+	var payload []byte
+	for i := 0; i < 9; i++ {
+		payload = append(payload, seq16(0xC8, 32767)...)
+	}
+	payload = append(payload, trn(0xC1)...)
+	ptx := rawField(tPTX, payload)
+	epg := rawField(tEPG, ebcdicSpaces(8))
+
+	var buf bytes.Buffer
+	for _, f := range [][]byte{bdt, bpg, ptx, epg, edt} {
+		buf.Write(f)
+	}
+	_, _, err := Reduce(&buf)
+	if err == nil {
+		t.Fatal("Reduce accepted a run with X beyond MaxCoordinate")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+	}
+	if derr.Kind != afp.KindValidation {
+		t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindValidation)
+	}
+}
