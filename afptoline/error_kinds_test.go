@@ -158,6 +158,22 @@ func TestReduce_FailSitesCarryTrueOffsets(t *testing.T) {
 	}
 }
 
+// fieldIntroLen decodes raw field bytes and returns the introducer's
+// header length, so tests derive payload offsets from the wire format
+// instead of hard-coding them.
+func fieldIntroLen(t *testing.T, raw []byte) int {
+	t.Helper()
+	f, err := afp.DecodeField(raw)
+	if err != nil {
+		t.Fatalf("DecodeField: %v", err)
+	}
+	rf, ok := f.(*afp.RawField)
+	if !ok {
+		t.Fatalf("decoded %T, want *afp.RawField", f)
+	}
+	return rf.Intro.HeaderLength()
+}
+
 // TestReduce_PTOCADecoderErrorOffsetRebased: a PTOCA decoder error carries
 // a decoder-local offset (relative to the PTX payload); visitPTX must
 // rebase it by the PTX field's stream start offset so DecodeError.Offset
@@ -177,9 +193,12 @@ func TestReduce_PTOCADecoderErrorOffsetRebased(t *testing.T) {
 	if derr.FieldID != "D3EE9B" {
 		t.Errorf("FieldID = %q, want D3EE9B", derr.FieldID)
 	}
-	// Stream-relative: PTX field start + decoder-local offset 5.
-	if want := len(bdt) + len(bpg) + 5; derr.Offset != want {
-		t.Errorf("Offset = %d, want %d (PTX field start + decoder-local offset 5)", derr.Offset, want)
+	// Stream-relative: PTX field start + introducer header length +
+	// decoder-local offset 5. The decoder reports offsets relative to
+	// the payload (after the introducer); visitPTX rebases with both.
+	introLen := fieldIntroLen(t, ptx)
+	if want := len(bdt) + len(bpg) + introLen + 5; derr.Offset != want {
+		t.Errorf("Offset = %d, want %d (PTX field start + introducer + decoder-local offset 5)", derr.Offset, want)
 	}
 }
 

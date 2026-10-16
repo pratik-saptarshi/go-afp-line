@@ -361,10 +361,12 @@ func (st *reduceState) visitPTX(t *afp.RawField) error {
 				return afp.DecodeError{FieldID: t.TypeID(), Offset: st.off, Kind: derr.Kind, Reason: derr.Reason}
 			}
 			// The decoder's own errors (FieldID "D3EE9B") carry
-			// decoder-local offsets relative to the PTX payload; rebase
-			// them to stream-relative. (Threading the introducer length
-			// into the rebase is CODEX-F01, deferred.)
-			derr.Offset += st.off
+			// decoder-local offsets relative to the PTX payload, which
+			// starts after the introducer; rebase them to stream-relative
+			// by adding the field's wire offset plus its introducer
+			// length. (The deeper threading of framing offsets through
+			// all malformed-input paths remains CODEX-F01, deferred.)
+			derr.Offset += st.off + t.Intro.HeaderLength()
 			return derr
 		}
 		return err
