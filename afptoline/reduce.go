@@ -139,11 +139,54 @@ type reduceState struct {
 	page     *line.Page // open page under construction, nil when outside a page
 	excls    []line.Exclusion
 	inDoc    bool
-	bng      int // named page group depth
-	bag      int // active environment group depth
-	bpt      int // presentation text object depth
-	textLeft int // decoded text bytes still within budget
-	off      int // cumulative stream offset through the field currently being visited
+	groups   []groupKind // open groups, innermost last; rejects misnesting
+	textLeft int         // decoded text bytes still within budget
+	off      int         // cumulative stream offset through the field currently being visited
+}
+
+// groupKind identifies a group delimiter on the pairing stack. BPG rides
+// the stack alongside BNG/BAG/BPT so an end field always closes the
+// innermost open group — flat counters accepted cross-closing (e.g. ENG
+// while a page opened inside the named group was still open).
+type groupKind int
+
+const (
+	grpBPG groupKind = iota
+	grpBNG
+	grpBAG
+	grpBPT
+)
+
+// openGroup pushes a group delimiter opened by the field under visit.
+func (st *reduceState) openGroup(g groupKind) {
+	st.groups = append(st.groups, g)
+}
+
+// groupTop reports the innermost open group; ok is false when none is open.
+func (st *reduceState) groupTop() (top groupKind, ok bool) {
+	if len(st.groups) == 0 {
+		return 0, false
+	}
+	return st.groups[len(st.groups)-1], true
+}
+
+// hasOpenGroup reports whether a group of kind g is open anywhere on the
+// stack. Opens are non-nesting per kind in v1 (BNG/BAG/BPT each reject a
+// second open), so this is the "already open" check for begin fields.
+func (st *reduceState) hasOpenGroup(g groupKind) bool {
+	for _, open := range st.groups {
+		if open == g {
+			return true
+		}
+	}
+	return false
+}
+
+// closeGroup pops the innermost open group. Callers verify the top matches
+// the expected kind before popping, so misnesting fails loudly instead of
+// cross-closing.
+func (st *reduceState) closeGroup() {
+	st.groups = st.groups[:len(st.groups)-1]
 }
 
 // fail builds the reducer's DecodeError. The kind classifies the failure;
@@ -169,7 +212,7 @@ func (st *reduceState) visit(f afp.Field) error {
 		if st.page != nil {
 			return st.fail(t.TypeID(), afp.KindStructure, "EDT with open page: missing EPG")
 		}
-		if st.bng != 0 || st.bag != 0 || st.bpt != 0 {
+		if len(st.groups) != 0 {
 			return st.fail(t.TypeID(), afp.KindStructure, "EDT with unclosed group")
 		}
 		st.inDoc = false
@@ -183,17 +226,29 @@ func (st *reduceState) visit(f afp.Field) error {
 		}
 		w, h := resolvePageGeometry()
 		st.page = &line.Page{Number: len(st.pages) + 1, Width: w, Height: h}
+		st.openGroup(grpBPG)
 		return nil
 	case *afp.EPG:
 		if st.page == nil {
 			return st.fail(t.TypeID(), afp.KindStructure, "EPG without BPG")
 		}
-		if st.bag != 0 {
+		// Pairing: EPG closes the page, so the innermost open group must
+		// be the page itself — anything else is a group crossing EPG.
+		// (page != nil implies grpBPG is on the stack: BPG pushes on open
+		// and only EPG pops, so the empty-stack arm is unreachable, but
+		// it fails loudly rather than panicking on closeGroup.)
+		top, ok := st.groupTop()
+		switch {
+		case ok && top == grpBAG:
 			return st.fail(t.TypeID(), afp.KindStructure, "EPG with open BAG group")
-		}
-		if st.bpt != 0 {
+		case ok && top == grpBPT:
 			return st.fail(t.TypeID(), afp.KindStructure, "EPG with open BPT group")
+		case ok && top == grpBPG:
+			// expected: pop below
+		default:
+			return st.fail(t.TypeID(), afp.KindStructure, "EPG with misnested group")
 		}
+		st.closeGroup() // grpBPG
 		st.pages = append(st.pages, *st.page)
 		st.page = nil
 		return nil
@@ -217,35 +272,60 @@ func (st *reduceState) visitRaw(t *afp.RawField) error {
 	// group delimiters, accept (and note) the environment fields.
 	switch id {
 	case "D3A8AD": // BNG
-		if !st.inDoc || st.page != nil || st.bng != 0 {
+		if !st.inDoc || st.page != nil || st.hasOpenGroup(grpBNG) {
 			return st.fail(id, afp.KindStructure, "BNG in illegal position")
 		}
-		st.bng++
+		st.openGroup(grpBNG)
 	case "D3A9AD": // ENG
-		if st.bng != 1 {
+		// Pairing: ENG closes the named group, so it must be innermost.
+		// A page opened inside the group (top == grpBPG) is the ARCH3-1
+		// misnesting: ENG would strand the open page.
+		top, ok := st.groupTop()
+		switch {
+		case ok && top == grpBPG:
+			return st.fail(id, afp.KindStructure, "ENG with open page: missing EPG")
+		case ok && top == grpBNG:
+			// expected: pop below
+		default:
 			return st.fail(id, afp.KindStructure, "ENG without BNG")
 		}
-		st.bng--
+		st.closeGroup() // grpBNG
 	case "D3A8C9": // BAG
-		if !st.inDoc || st.page == nil || st.bag != 0 {
+		if !st.inDoc || st.page == nil || st.hasOpenGroup(grpBAG) {
 			return st.fail(id, afp.KindStructure, "BAG in illegal position")
 		}
-		st.bag++
+		st.openGroup(grpBAG)
 	case "D3A9C9": // EAG
-		if st.bag != 1 {
+		// Pairing: EAG closes the environment group, so it must be
+		// innermost — a BPT opened inside it is still open.
+		top, ok := st.groupTop()
+		switch {
+		case ok && top == grpBPT:
+			return st.fail(id, afp.KindStructure, "EAG with open BPT group")
+		case ok && top == grpBAG:
+			// expected: pop below
+		default:
 			return st.fail(id, afp.KindStructure, "EAG without BAG")
 		}
-		st.bag--
+		st.closeGroup() // grpBAG
 	case "D3A89B": // BPT
-		if st.page == nil || st.bpt != 0 {
+		if st.page == nil || st.hasOpenGroup(grpBPT) {
 			return st.fail(id, afp.KindStructure, "BPT outside page or nested")
 		}
-		st.bpt++
+		st.openGroup(grpBPT)
 	case "D3A99B": // EPT
-		if st.bpt != 1 {
+		// Pairing: EPT closes the text object, so it must be innermost —
+		// a BAG opened inside it is still open.
+		top, ok := st.groupTop()
+		switch {
+		case ok && top == grpBAG:
+			return st.fail(id, afp.KindStructure, "EPT with open BAG group")
+		case ok && top == grpBPT:
+			// expected: pop below
+		default:
 			return st.fail(id, afp.KindStructure, "EPT without BPT")
 		}
-		st.bpt--
+		st.closeGroup() // grpBPT
 	case "D3AB8A", // MCF: v1 notes the mapping; fixtures carry none
 		"D3B19B": // PTD: v1 notes the descriptor; fixtures carry no AEG
 		if !st.inDoc {
@@ -391,7 +471,7 @@ func (st *reduceState) finish() error {
 	if st.page != nil {
 		return st.fail("", afp.KindStructure, "end of stream with open page: missing EPG")
 	}
-	if st.bng != 0 || st.bag != 0 || st.bpt != 0 {
+	if len(st.groups) != 0 {
 		return st.fail("", afp.KindStructure, "end of stream with unclosed group")
 	}
 	if st.inDoc {
