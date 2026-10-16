@@ -6,13 +6,13 @@
 
 **Tech Stack:** Go 1.27, stdlib only for the fixes. Repo checks per task: `gofmt -l`, `go vet ./...`, `go test -count=1 -race ./...`.
 
-**Spec:** `docs/reviews/panel-round2-2026-10-15.md` (the panel verdict, verbatim). Key spec facts used: EPG must require `bpt == 0`; text budget 1 MiB per document default, configurable, error carries offset; C1 policy is reject-not-map; page bound 14,400 pt.
+**Spec:** `docs/process/reviews/panel-round2-2026-10-15.md` (the panel verdict, verbatim). Key spec facts used: EPG must require `bpt == 0`; text budget 1 MiB per document default, configurable, error carries offset; C1 policy is reject-not-map; page bound 14,400 pt.
 
 ## Validation performed (2026-10-15)
 
 Every blocker claim was corroborated against the merged tree before planning:
 
-- **Plan-file leak:** confirmed — both `docs/superpowers/plans/2026-10-14-*.md` carry "REQUIRED SUB-SKILL" headers; the EAG plan has local home-directory paths; the P0 plan cites removed `docs/_evidence/ptoca-reference-extract.txt` and quotes the RPS spec sentence.
+- **Plan-file leak:** confirmed — both `2026-10-14-*.md` plan files carry "REQUIRED SUB-SKILL" headers; the EAG plan has local home-directory paths; the P0 plan cites removed `docs/_evidence/ptoca-reference-extract.txt` and quotes the RPS spec sentence.
 - **Dangling docs:** confirmed — `docs/afp-file-format-spec.md:10` cites removed PDFs; `docs/_evidence/README.md` is stale Task-0 process notes; `README.md:27` claims "verified against the IBM PTOCA Reference" with no spec text in repo.
 - **BPT/EPG hole:** confirmed — `afptoline/reduce.go` EPG case checks `st.page == nil` and `st.bag != 0` but not `st.bpt != 0`; the reported stream is accepted.
 - **RPS amplification:** confirmed — RLENGTH is uint16 (64 KiB per sequence max), no budget exists anywhere on the decode path.
@@ -44,7 +44,7 @@ The reviewer should attack these five inputs specifically:
 
 ### Task A1: Doc hygiene — remove leaks and stale references
 
-**Files:** delete `docs/superpowers/plans/2026-10-14-afp-panel-p0-batch.md`, `docs/superpowers/plans/2026-10-14-eag-pairing-fix.md`, `docs/_evidence/README.md`; modify `docs/afp-file-format-spec.md`, `README.md`. (This plan file stays as the active working document; it contains no local paths.)
+**Files:** delete the `2026-10-14-afp-panel-p0-batch.md` and `2026-10-14-eag-pairing-fix.md` plan files, `docs/_evidence/README.md`; modify `docs/afp-file-format-spec.md`, `README.md`. (This plan file stays as the active working document; it contains no local paths.)
 
 **Steps:**
 1. Confirm nothing links to `docs/_evidence/README.md` (`grep -rn "_evidence/README" docs README.md`); delete it.

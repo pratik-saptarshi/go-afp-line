@@ -6,7 +6,7 @@
 
 **Tech Stack:** Go testing, `testing` package examples.
 
-**Spec:** `docs/superpowers/plans/2026-10-15-panel-round2-findings.md`, Backlog entry R2P2-F03 ("Example tests, duplicate package comment in `afptoline` — defer — trivial; bundle into any future test task"). Zero `Example` functions exist today (verified 2026-10-15); the duplicate comments are at `afptoline/ptoca.go:1` and `afptoline/reduce.go:1`.
+**Spec:** `docs/process/plans/2026-10-15-panel-round2-findings.md`, Backlog entry R2P2-F03 ("Example tests, duplicate package comment in `afptoline` — defer — trivial; bundle into any future test task"). Zero `Example` functions exist today (verified 2026-10-15); the duplicate comments are at `afptoline/ptoca.go:1` and `afptoline/reduce.go:1`.
 
 ## Global Constraints
 

@@ -6,7 +6,7 @@
 
 **Tech Stack:** GitHub Actions, Dependabot, govulncheck, Keep-a-Changelog format.
 
-**Spec:** `docs/superpowers/plans/2026-10-15-panel-round2-findings.md`, Backlog entry R2P2-F04 ("`govulncheck`, Dependabot, `SECURITY.md`, changelog, fuller `.gitignore` — defer — operational workstream, separate from code correctness").
+**Spec:** `docs/process/plans/2026-10-15-panel-round2-findings.md`, Backlog entry R2P2-F04 ("`govulncheck`, Dependabot, `SECURITY.md`, changelog, fuller `.gitignore` — defer — operational workstream, separate from code correctness").
 
 ## Global Constraints
 

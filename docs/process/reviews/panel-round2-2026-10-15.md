@@ -17,7 +17,7 @@ Note: the panel ran against d876cdd (pre-merge head). `main` had been history-re
 
 ## Merge-blockers for this branch
 
-1. **Agent plan files leak (BP2-1, BP2-2).** `docs/superpowers/plans/*.md` contain "REQUIRED SUB-SKILL" headers and a local home-directory path with a username. One also quotes an IBM sentence and cites a removed file. Remove them (S).
+1. **Agent plan files leak (BP2-1, BP2-2).** The agent plan files (since moved to `docs/process/plans/`) contain "REQUIRED SUB-SKILL" headers and a local home-directory path with a username. One also quotes an IBM sentence and cites a removed file. Remove them (S).
 2. **Dangling and overclaiming docs (BP2-3, BP2-4, BP-3).**
    - `docs/afp-file-format-spec.md:10` cites PDFs that no longer exist.
    - `docs/_evidence/README.md` is leftover process notes.

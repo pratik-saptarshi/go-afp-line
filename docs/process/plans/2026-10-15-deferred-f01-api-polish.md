@@ -6,7 +6,7 @@
 
 **Tech Stack:** Go; `go vet`, `staticcheck`-style reasoning done by hand.
 
-**Spec:** `docs/superpowers/plans/2026-10-15-panel-round2-findings.md`, Backlog entry R2P2-F01 ("Exported mutable maps, split font tables, dead `MaxFieldSize` check, wide API — defer — pre-existing API polish; revisit once the API surface stabilizes"). The API has since stabilized (Phases A/B/C shipped), so the deferral rationale has expired. Survey 2026-10-15: `afp.CodePages` (`afp/codepage.go:29`, lookup `LookupCodePage` exists), `line.PinnedFonts` (`line/line.go:136`, lookup `LookupFont` exists, no external callers), `DecodeIntroducer`'s `length > MaxFieldSize` check (`afp/sfi.go:113`), 194 exported declarations total, zero `Example` functions.
+**Spec:** `docs/process/plans/2026-10-15-panel-round2-findings.md`, Backlog entry R2P2-F01 ("Exported mutable maps, split font tables, dead `MaxFieldSize` check, wide API — defer — pre-existing API polish; revisit once the API surface stabilizes"). The API has since stabilized (Phases A/B/C shipped), so the deferral rationale has expired. Survey 2026-10-15: `afp.CodePages` (`afp/codepage.go:29`, lookup `LookupCodePage` exists), `line.PinnedFonts` (`line/line.go:136`, lookup `LookupFont` exists, no external callers), `DecodeIntroducer`'s `length > MaxFieldSize` check (`afp/sfi.go:113`), 194 exported declarations total, zero `Example` functions.
 
 ## Global Constraints
 
@@ -27,7 +27,7 @@
 
 ## File Structure
 
-- Create `docs/superpowers/designs/2026-10-15-f01-api-audit.md` — Task 1's audit + decisions (the contract Task 2 implements).
+- Create `docs/process/designs/2026-10-15-f01-api-audit.md` — Task 1's audit + decisions (the contract Task 2 implements).
 - Modify per Task 1's decisions — expected: `afp/codepage.go` (unexport map), `line/line.go` (unexport map), possibly `afp/sfi.go` (dead check), plus whatever the wide-API audit surfaces.
 - Test: existing suite must stay green; new tests only where behavior changes.
 
@@ -36,7 +36,7 @@
 ### Task 1: API audit and design decisions
 
 **Files:**
-- Create: `docs/superpowers/designs/2026-10-15-f01-api-audit.md`
+- Create: `docs/process/designs/2026-10-15-f01-api-audit.md`
 - Modify: none (audit only)
 - Test: n/a — deliverable is the design doc + reviewer sign-off
 
@@ -59,7 +59,7 @@ Record the complete list in the doc's appendix. For each of the four findings, i
 
 - [ ] **Step 2: Write the design doc**
 
-`docs/superpowers/designs/2026-10-15-f01-api-audit.md` with: per-finding evidence (call graphs), a decision per item, and the exact renames/removals Task 2 will make. End with an "Open questions" section if any.
+`docs/process/designs/2026-10-15-f01-api-audit.md` with: per-finding evidence (call graphs), a decision per item, and the exact renames/removals Task 2 will make. End with an "Open questions" section if any.
 
 - [ ] **Step 3: Independent reviewer sign-off**
 
@@ -68,7 +68,7 @@ A fresh reviewer (subagent, most capable model) verifies the call-graph claims a
 - [ ] **Step 4: Commit the doc**
 
 ```bash
-git add docs/superpowers/designs/2026-10-15-f01-api-audit.md
+git add docs/process/designs/2026-10-15-f01-api-audit.md
 git commit -m "docs: API audit and decisions for F01"
 ```
 
