@@ -19,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 - Bound-aware framing fallback: 5A-prefixed records with an over-max length are now rejected by the length bound instead of being misclassified as naked framing (reported as truncation).
+- Map EBCDIC NEL (U+0085) to space instead of failing with a C1 encoding rejection.
+- Persist PTOCA decoder state (position, SIA, font, suppression) across PTX fields within a presentation text object; reset on BPT, discarded on EPT, cleared on page boundary.
 
 ## [Round 2 Phase C] - 2026-10-15
 

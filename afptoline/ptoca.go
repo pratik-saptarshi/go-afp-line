@@ -119,7 +119,7 @@ func (st *ptocaState) flush() error {
 	// encoding, but rejecting it fails legitimate documents; map to space so
 	// text stays readable, searchable, and word-broken. (v0.x: true line-break
 	// semantics are a future design.)
-	text = strings.ReplaceAll(text, "", " ")
+	text = strings.ReplaceAll(text, "\u0085", " ")
 	st.runs = append(st.runs, Run{
 		Text:   text,
 		X:      st.curX,

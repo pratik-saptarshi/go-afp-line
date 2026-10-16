@@ -355,10 +355,8 @@ func (st *reduceState) visitRaw(t *afp.RawField) error {
 }
 
 // decodePTX decodes one PTX field's payload through the persistent PTOCA
-// decoder state, returning only the runs appended by this field. PTOCA
-// state persists across PTX fields: a text object split across PTX records
-// is one continuous stream. BPT resets, EPT discards, BPG clears; a PTX
-// outside any BPT lazily starts (and keeps) a stream.
+// decoder state (see the ptxSt field comment), returning only the runs
+// appended by this field.
 func (st *reduceState) decodePTX(t *afp.RawField) ([]Run, error) {
 	if st.ptxSt == nil {
 		st.ptxSt = &ptocaState{}
