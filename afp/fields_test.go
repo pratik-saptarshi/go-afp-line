@@ -421,6 +421,36 @@ func TestFields_ArchitecturalMaxFailFast(t *testing.T) {
 	}
 }
 
+// TestFields_IntroducerErrorRebasedToFieldStart: an introducer validation
+// failure in a field at a nonzero stream offset must report the field's
+// stream offset, not the decoder-local offset. Guards the
+// derr.Offset += fieldStart rebase in checkIntroducer (a mutant dropping
+// it would report offset 8 here instead of 16).
+func TestFields_IntroducerErrorRebasedToFieldStart(t *testing.T) {
+	// Field 1: valid 8-byte naked field (BDT introducer, no extension).
+	field1 := []byte{0x00, 0x08, 0xD3, 0xA8, 0xA8, 0x00, 0x00, 0x00}
+	// Field 2: SFLength 8 but SFI extension bit set with no ExtLength
+	// byte present: decodeIntroducer fails with a field-local offset of
+	// sfiLen (8), which checkIntroducer must rebase to the field start.
+	field2 := []byte{0x00, 0x08, 0xD3, 0xA8, 0xA8, 0x80, 0x00, 0x00}
+	stream := append(field1, field2...)
+	_, err := collectFields(t, bytes.NewReader(stream))
+	if err == nil {
+		t.Fatal("Fields accepted a field with a truncated SFI extension")
+	}
+	var derr DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("error = %T (%v), want DecodeError", err, err)
+	}
+	if want := len(field1) + sfiLen; derr.Offset != want {
+		t.Errorf("Offset = %d, want %d (field start %d + local offset %d)",
+			derr.Offset, want, len(field1), sfiLen)
+	}
+	if derr.FieldID != "D3A8A8" {
+		t.Errorf("FieldID = %q, want D3A8A8", derr.FieldID)
+	}
+}
+
 // TestFields_WrappedOverMaxLength pins the fail-fast contract for a
 // 5A-wrapped record claiming more than the architectural maximum: the
 // bound violation is reported even when the record is truncated short,

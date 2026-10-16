@@ -148,8 +148,15 @@ func (st *ptocaState) flush() error {
 			gaps++
 		}
 	}
-	if st.prevWord && len(runes) > 0 && isWordChar(runes[0]) {
+	// The inter-run gap belongs to the boundary between the previous run's
+	// last character and this run's first, so it shifts this run's recorded
+	// presentation position. st.ic carries it (added below), but the run's X
+	// was captured by markStart() before the gap was known, so shift the
+	// just-emitted run by the same amount.
+	interRunGap := st.prevWord && len(runes) > 0 && isWordChar(runes[0])
+	if interRunGap {
 		gaps++
+		st.runs[len(st.runs)-1].X += float64(st.sia) / lUnitsPerPoint
 	}
 	st.ic += w*lUnitsPerPoint + float64(st.sia)*float64(gaps)
 	st.prevWord = len(runes) > 0 && isWordChar(runes[len(runes)-1])

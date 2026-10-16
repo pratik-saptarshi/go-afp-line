@@ -121,6 +121,24 @@ func TestDecodeIntroducer_LyingLength(t *testing.T) {
 	}
 }
 
+// TestDecodeIntroducer_LyingLengthCarriesFieldID: the SFLength bound
+// violation must carry the introducer's TypeID as FieldID, so callers can
+// name the offending field. Guards the FieldID assignment in
+// decodeIntroducer's length checks (a mutant dropping it would report an
+// anonymous error).
+func TestDecodeIntroducer_LyingLengthCarriesFieldID(t *testing.T) {
+	// SFLength 0xFFFF with TypeID bytes FF D3 A8.
+	b := []byte{0xFF, 0xFF, 0xFF, 0xD3, 0xA8, 0xA8, 0x00, 0x00}
+	_, err := decodeIntroducer(b)
+	var derr DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("expected DecodeError, got %T (%v)", err, err)
+	}
+	if derr.FieldID != "FFD3A8" {
+		t.Errorf("FieldID = %q, want FFD3A8 (the introducer's TypeID)", derr.FieldID)
+	}
+}
+
 func TestSplitFields_LyingLength(t *testing.T) {
 	// Naked field claims 0xFFFF bytes; only 8 follow. Must fail, not OOM.
 	b := []byte{0xFF, 0xFF, 0xD3, 0xA8, 0xA8, 0x00, 0x00, 0x00}

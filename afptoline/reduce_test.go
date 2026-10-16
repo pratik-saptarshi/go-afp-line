@@ -618,6 +618,44 @@ func TestReduce_RejectsC1Controls(t *testing.T) {
 	}
 }
 
+// TestReduce_RejectsC1UpperBound: the C1 rejection must cover the full C1
+// range through U+009F. A PTX whose EBCDIC-037 byte 0xFF decodes to U+009F
+// must fail with KindEncoding, naming the PTX field and its stream offset.
+// Guards the `c <= 0x9F` upper bound in visitPTX (a `c <= 0x9E` mutant
+// would let U+009F through to linetopdf, which has no WinAnsi mapping).
+func TestReduce_RejectsC1UpperBound(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	epg := rawField(tEPG, ebcdicSpaces(8))
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+
+	// 0xFF in code page 037 decodes to U+009F, the top of the C1 range.
+	c1PTX := rawField(tPTX, trn(0xC1, 0xFF, 0xC2))
+	var buf bytes.Buffer
+	for _, f := range [][]byte{bdt, bpg, c1PTX, epg, edt} {
+		buf.Write(f)
+	}
+	wantOffset := len(bdt) + len(bpg)
+
+	_, _, err := Reduce(&buf)
+	if err == nil {
+		t.Fatal("Reduce accepted a PTX decoding to U+009F")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+	}
+	if derr.Kind != afp.KindEncoding {
+		t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindEncoding)
+	}
+	if derr.FieldID != "D3EE9B" {
+		t.Errorf("FieldID = %q, want D3EE9B", derr.FieldID)
+	}
+	if derr.Offset != wantOffset {
+		t.Errorf("Offset = %d, want %d (field-start offset of the offending PTX)", derr.Offset, wantOffset)
+	}
+}
+
 // TestReduceWithCodePage_CP500: EBCDIC byte 0x4A decodes to U+00A2 (¢) in
 // code page 037 but U+005B ([) in code page 500, so the same PTX yields
 // different text under the two pages. ReduceWithCodePage must honor the
