@@ -7,14 +7,14 @@
 
 The plan-review-integrator (skill v2.1) classified the 23 remaining Round 2
 panel findings: 15 bundled into Phase C tasks C1–C13, 7 deferred with
-rationale, 1 informational. Traceability is in `integration_log.jsonl`.
+rationale, 1 informational. Traceability is in `docs/process/integration_log.jsonl`.
 The two open items were the `context.Context` scoping decision (resolved by
 ADR 0001: drop) and approval of the Phase C tasking itself.
 
 ## Decision
 
 Approve the Phase C tasking as written in
-`docs/superpowers/plans/2026-10-15-panel-round2-findings.md`:
+`docs/process/plans/2026-10-15-panel-round2-findings.md`:
 
 - **Parsing/encoding workstream** — C1 (5A marker validation), C2 (triplet
   overflow + stale introducer length; the encode-error contract is decided

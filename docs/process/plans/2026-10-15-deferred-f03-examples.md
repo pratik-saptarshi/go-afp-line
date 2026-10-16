@@ -1,19 +1,17 @@
 # Example Tests + Package Comment (F03) Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Add runnable example tests for the library's main entry points and fix the duplicate package comment in `afptoline` (deferred P2 R2P2-F03).
 
 **Architecture:** Docs-only change: no production code is touched. `Example` functions with `// Output:` comments go in `example_test.go` files beside the packages they demonstrate (Go convention — examples appear on pkg.go.dev); the duplicate `// Package afptoline` comment is removed from `ptoca.go`, keeping `reduce.go`'s.
 
 **Tech Stack:** Go testing, `testing` package examples.
 
-**Spec:** `docs/superpowers/plans/2026-10-15-panel-round2-findings.md`, Backlog entry R2P2-F03 ("Example tests, duplicate package comment in `afptoline` — defer — trivial; bundle into any future test task"). Zero `Example` functions exist today (verified 2026-10-15); the duplicate comments are at `afptoline/ptoca.go:1` and `afptoline/reduce.go:1`.
+**Spec:** `docs/process/plans/2026-10-15-panel-round2-findings.md`, Backlog entry R2P2-F03 ("Example tests, duplicate package comment in `afptoline` — defer — trivial; bundle into any future test task"). Zero `Example` functions exist today (verified 2026-10-15); the duplicate comments are at `afptoline/ptoca.go:1` and `afptoline/reduce.go:1`.
 
 ## Global Constraints
 
 - Go 1.27 toolchain; no new module dependencies.
-- Conventional Commits subjects; identity `CloudBot Neo-green <waynemanorsaptarshi@gmail.com>`.
+- Conventional Commits subjects; identity `automation <waynemanorsaptarshi@gmail.com>`.
 - Examples must be runnable by `go test` and deterministic (no map iteration order, no timing).
 - Never force-push; work on branch `chore/deferred-f03-examples` from `origin/main`.
 

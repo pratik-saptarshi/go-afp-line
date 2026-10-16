@@ -1,19 +1,17 @@
 # Operational Hygiene (F04) Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Add the deferred operational-hygiene items (F04) to go-afp-line: vulnerability scanning in CI, Dependabot updates, a security policy, a changelog, and a complete `.gitignore`.
 
 **Architecture:** Config-and-docs-only change: no production code is touched. CI gains a `vuln` job (govulncheck) and Dependabot covers Go modules plus GitHub Actions; repo-root docs (`SECURITY.md`, `CHANGELOG.md`) follow standard layouts; `.gitignore` gains the standard Go set while preserving the existing evidence exclusions.
 
 **Tech Stack:** GitHub Actions, Dependabot, govulncheck, Keep-a-Changelog format.
 
-**Spec:** `docs/superpowers/plans/2026-10-15-panel-round2-findings.md`, Backlog entry R2P2-F04 ("`govulncheck`, Dependabot, `SECURITY.md`, changelog, fuller `.gitignore` — defer — operational workstream, separate from code correctness").
+**Spec:** `docs/process/plans/2026-10-15-panel-round2-findings.md`, Backlog entry R2P2-F04 ("`govulncheck`, Dependabot, `SECURITY.md`, changelog, fuller `.gitignore` — defer — operational workstream, separate from code correctness").
 
 ## Global Constraints
 
 - Go 1.27 toolchain (per `go.mod`); no new module dependencies.
-- Conventional Commits subjects; identity `CloudBot Neo-green <waynemanorsaptarshi@gmail.com>`.
+- Conventional Commits subjects; identity `automation <waynemanorsaptarshi@gmail.com>`.
 - CI style follows `.github/workflows/ci.yml`: SHA-pinned actions with trailing version comments, top-level `permissions: contents: read`, `timeout-minutes` on every job.
 - Never force-push; work on branch `chore/operational-hygiene-f04` from `origin/main`.
 - Docs live at repo root (`SECURITY.md`, `CHANGELOG.md`), matching `README.md`/`CONTRIBUTING.md` placement.

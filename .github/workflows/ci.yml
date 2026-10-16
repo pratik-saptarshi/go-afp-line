@@ -47,12 +47,12 @@ jobs:
         run: go test -race -shuffle=on ./...
       - name: coverage floor
         # Coverage floor: the build fails if total statement coverage drops
-        # below 85%. Measured total coverage when the floor was set
-        # (2026-10-15): 87.7%. Re-measure and raise the floor if coverage
+        # below 90%. Measured total coverage when the floor was set
+        # (2026-10-15): 92.8%. Re-measure and raise the floor if coverage
         # improves materially.
         run: |
-          FLOOR=85
-          go test -shuffle=on -coverprofile=coverage.out ./... > /dev/null
+          FLOOR=90
+          go test -race -shuffle=on -coverprofile=coverage.out ./... > /dev/null
           TOTAL=$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%$/, "", $3); print $3}')
           echo "total coverage: ${TOTAL}% (floor: ${FLOOR}%)"
           awk -v got="${TOTAL}" -v want="${FLOOR}" 'BEGIN {exit !(got >= want)}' \
@@ -69,4 +69,24 @@ jobs:
         with:
           go-version: "1.27"
       - name: govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  fuzz-smoke:
+    # Short fuzz smoke: 30s per target over the seed corpus plus new
+    # mutations. A crasher fails the job and is written to the target's
+    # testdata/fuzz directory. Total added CI time is ~2-4 minutes.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27"
+      - name: fuzz smoke
+        run: |
+          go test -run=NONE -fuzz=FuzzDecodeField -fuzztime=30s ./afp
+          go test -run=NONE -fuzz=FuzzDecodeIntroducer -fuzztime=30s ./afp
+          go test -run=NONE -fuzz=FuzzDecodePTOCA -fuzztime=30s ./afptoline
+          go test -run=NONE -fuzz=FuzzReduce -fuzztime=30s ./afptoline

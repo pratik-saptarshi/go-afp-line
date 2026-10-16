@@ -109,8 +109,9 @@ func TestDecodePTOCA_RMI(t *testing.T) {
 }
 
 func TestDecodePTOCA_SIA_Parses(t *testing.T) {
-	// Intercharacter adjustment is tracked, not applied (no font metrics in
-	// v1 — Task 8 applies advances with the pinned metrics table).
+	// Intercharacter adjustment is tracked but not applied here: DecodePTOCA
+	// decodes without font metrics; the Reduce path applies advances with the
+	// pinned metrics table.
 	p := append(seq(0xC2, 0xFF, 0xF6), trn(0xC1, 0xC2)...) // SIA -10
 	runs := decode(t, p)
 	if len(runs) != 1 || runs[0].Text != "AB" {

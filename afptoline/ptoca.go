@@ -23,12 +23,11 @@ type advanceFunc func(fontLID byte, text string) (float64, error)
 
 // Run is a decoded PTOCA text run: decoded text with its presentation position
 // in points, in PTOCA object space (X rightward from the inline origin, Y
-// downward from the baseline origin). Task 8 maps this into PDF user space
-// (which flips Y using page geometry the state machine does not have).
+// downward from the baseline origin). The PDF renderer maps this into PDF user
+// space (which flips Y using page geometry the state machine does not have).
 //
 // FontID is the SCFL local font ID active when the run starts (0 = default).
-// It is an extension of the plan's Run shape: Task 8 needs it to resolve
-// line.TextRun font metrics.
+// The reducer needs it to resolve line.TextRun font metrics.
 type Run struct {
 	Text   string
 	X, Y   float64

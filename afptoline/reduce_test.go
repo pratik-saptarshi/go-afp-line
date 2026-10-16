@@ -352,6 +352,68 @@ func TestReduce_BPTMustNotCrossEPG(t *testing.T) {
 	}
 }
 
+// TestReduce_RejectsMisnestedGroups: a group end must close the innermost
+// open group (ARCH3-1). Flat counters accepted these misnested streams;
+// the pairing stack rejects each at the offending end field with a typed
+// afp.DecodeError.
+func TestReduce_RejectsMisnestedGroups(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	epg := rawField(tEPG, ebcdicSpaces(8))
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	tBNG := [3]byte{0xD3, 0xA8, 0xAD}
+	tENG := [3]byte{0xD3, 0xA9, 0xAD}
+	bng := rawField(tBNG, ebcdicSpaces(8))
+	eng := rawField(tENG, ebcdicSpaces(8))
+	bag := rawField(tBAG, nil)
+	eag := rawField(tEAG, nil)
+	bpt := rawField(tBPT, nil)
+	ept := rawField(tEPT, nil)
+	ptx := rawField(tPTX, trn(0xC1))
+
+	cases := []struct {
+		name       string
+		stream     [][]byte
+		wantReason string // substring; must name the offending end field
+		wantField  string
+	}{
+		// ENG closes the named group while a page opened inside it is
+		// still open: the innermost open group is the page, not the BNG.
+		{"ENG across open page", [][]byte{bdt, bng, bpg, eng, epg, edt}, "ENG", "D3A9AD"},
+		// EAG closes the environment group while a text object opened
+		// inside it is still open.
+		{"EAG across open BPT", [][]byte{bdt, bpg, bag, bpt, eag, ept, epg, edt}, "EAG", "D3A9C9"},
+		// EPT closes the text object while an environment group opened
+		// inside it is still open.
+		{"EPT across open BAG", [][]byte{bdt, bpg, bpt, ptx, bag, ept, eag, epg, edt}, "EPT", "D3A99B"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			for _, f := range tc.stream {
+				buf.Write(f)
+			}
+			_, _, err := Reduce(&buf)
+			if err == nil {
+				t.Fatalf("Reduce accepted misnested stream %q", tc.name)
+			}
+			var derr afp.DecodeError
+			if !errors.As(err, &derr) {
+				t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+			}
+			if derr.Kind != afp.KindStructure {
+				t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindStructure)
+			}
+			if !strings.Contains(derr.Reason, tc.wantReason) {
+				t.Errorf("Reason = %q, want it to name %q", derr.Reason, tc.wantReason)
+			}
+			if derr.FieldID != tc.wantField {
+				t.Errorf("FieldID = %q, want %q", derr.FieldID, tc.wantField)
+			}
+		})
+	}
+}
+
 // errReader fails on Read: it proves ReduceWithBudget rejects a non-positive
 // budget before touching the input at all.
 type errReader struct{}

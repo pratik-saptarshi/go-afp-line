@@ -15,12 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - API polish: 12 internal-only identifiers unexported across `afp`, `line`, and `afptoline`; `LookupFont` now returns a defensive copy (its struct shared a mutable map with the global font table).
 - Provably-dead `MaxFieldSize` checks removed; the streaming iterator now fail-fasts on `flen > maxSFLength` (32767) before allocating.
+- PTOCA inline position now advances past emitted text on the `Reduce` path, using pinned font metrics plus the SIA intercharacter adjustment. Runs after text in one PTX start at the advanced position; absolute moves (AMI) and new lines (BLN) still override it. `DecodePTOCA` is unchanged (no advancement).
 
 ### Fixed
 - Bound-aware framing fallback: 5A-prefixed records with an over-max length are now rejected by the length bound instead of being misclassified as naked framing (reported as truncation).
-
-### Changed
-- PTOCA inline position now advances past emitted text on the `Reduce` path, using pinned font metrics plus the SIA intercharacter adjustment. Runs after text in one PTX start at the advanced position; absolute moves (AMI) and new lines (BLN) still override it. `DecodePTOCA` is unchanged (no advancement).
 
 ## [Round 2 Phase C] - 2026-10-15
 
