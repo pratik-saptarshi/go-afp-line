@@ -1,7 +1,5 @@
 # Round 2 Panel Findings — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use the superpowers skill `test-driven-development` for every code change and `finishing-a-development-branch` when each phase is complete.
-
 **Goal:** Fix-forward the Round 2 adversarial panel findings on go-afp-line `main` (post-merge of PR #1, merge commit 43f4472). Phase A covers the five ex-merge-blockers; Phase B covers the three next-PR P0s; Phase C plans the P1 items as concrete tasks (P2 items are dispositioned as deferred backlog with rationale).
 
 **Architecture:** No new packages. Changes are local to `afptoline` (reducer guards, text budget), `line` (validation bounds), `linetopdf` (test pins only), and docs. The RPS budget is enforced at PTX-append time in the reducer (per-document accounting, error attributed to the offending PTX), which subsumes the panel's "per PTX and per document" ask: no single PTX can exceed the document budget.
@@ -14,7 +12,7 @@
 
 Every blocker claim was corroborated against the merged tree before planning:
 
-- **Plan-file leak:** confirmed — both `docs/superpowers/plans/2026-10-14-*.md` carry "REQUIRED SUB-SKILL" headers; the EAG plan has `/home/hatch/...` paths; the P0 plan cites removed `docs/_evidence/ptoca-reference-extract.txt` and quotes the RPS spec sentence.
+- **Plan-file leak:** confirmed — both `docs/superpowers/plans/2026-10-14-*.md` carry "REQUIRED SUB-SKILL" headers; the EAG plan has local home-directory paths; the P0 plan cites removed `docs/_evidence/ptoca-reference-extract.txt` and quotes the RPS spec sentence.
 - **Dangling docs:** confirmed — `docs/afp-file-format-spec.md:10` cites removed PDFs; `docs/_evidence/README.md` is stale Task-0 process notes; `README.md:27` claims "verified against the IBM PTOCA Reference" with no spec text in repo.
 - **BPT/EPG hole:** confirmed — `afptoline/reduce.go` EPG case checks `st.page == nil` and `st.bag != 0` but not `st.bpt != 0`; the reported stream is accepted.
 - **RPS amplification:** confirmed — RLENGTH is uint16 (64 KiB per sequence max), no budget exists anywhere on the decode path.

@@ -1,7 +1,5 @@
 # API Polish (F01) Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Resolve the deferred API-polish findings (R2P2-F01): exported mutable maps, split font tables, the dead `MaxFieldSize` check, and the wide API surface.
 
 **Architecture:** Design-first: Task 1 audits the surface and records decisions in a design doc; an independent reviewer signs off before Task 2 implements (same governance gate as C13). Implementation is mechanical refactoring — unexporting, dead-code removal, doc updates — with TDD where observable behavior changes.
@@ -13,7 +11,7 @@
 ## Global Constraints
 
 - Go 1.27 toolchain; no new module dependencies.
-- Conventional Commits subjects; identity `CloudBot Neo-green <waynemanorsaptarshi@gmail.com>`.
+- Conventional Commits subjects; identity `automation <waynemanorsaptarshi@gmail.com>`.
 - Breaking changes to exported API are allowed here (v1 reference library, pre-1.0 semantics) but each must be recorded in the design doc with rationale.
 - Never force-push; work on branch `chore/deferred-f01-api-polish` from `origin/main`.
 - Full `gofmt`, `go vet`, `go test -count=1 -race ./...` green after every task.
