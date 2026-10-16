@@ -584,3 +584,31 @@ func TestDecodePTOCA_ErrorPaths(t *testing.T) {
 		})
 	}
 }
+
+// TestDecodePTOCA_RPSBudgetIsCumulative (RB3): the in-decoder text budget
+// must be cumulative across control sequences, not per-sequence. Three RPS
+// sequences each with RLENGTH == maxBytes pass doRPS's per-sequence
+// pre-check, but together they exceed the budget; the second sequence must
+// fail fast inside the decoder with KindBudget. This guards the
+// st.remaining decrement in text(): with it mutated away, the decode
+// succeeds (3000 bytes against a 1000-byte budget) and only a later,
+// post-allocation check could reject it.
+func TestDecodePTOCA_RPSBudgetIsCumulative(t *testing.T) {
+	const budget = 1000
+	var payload []byte
+	for i := 0; i < 3; i++ {
+		// RPS: RLENGTH(2B) = 1000, RPTDATA = "A" (EBCDIC 0xC1).
+		payload = append(payload, seq(0xEE, 0x03, 0xE8, 0xC1)...)
+	}
+	_, err := decodePTOCA(ptxField(payload), testCP(t), budget, nil)
+	if err == nil {
+		t.Fatal("decodePTOCA accepted 3x1000 RPS bytes against a 1000-byte budget")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+	}
+	if derr.Kind != afp.KindBudget {
+		t.Errorf("Kind = %q, want %q (decoder fail-fast, not a later check)", derr.Kind, afp.KindBudget)
+	}
+}
