@@ -30,7 +30,8 @@ subset fails loudly with a diagnostic — never silently.
   suppressed-with-reason, or excluded-with-diagnostic.
 - **Untagged PDF output** — rendered with pdfcpu, verified geometry via an
   independent reader (poppler), producer stamped "untagged; not accessible".
-- **Fuzz-tested parsers** — `FuzzDecodeIntroducer` / `FuzzDecodeField` seed corpora;
+- **Fuzz-tested parsers** — `FuzzDecodeIntroducer` / `FuzzDecodeField` (`afp`) and
+  `FuzzDecodePTOCA` / `FuzzReduce` (`afptoline`) seed corpora;
   fuzzing caught real bugs before release.
 - **Permissive dependency tree** — Apache-2.0/MIT/BSD/ISC only; no GPL/AGPL anywhere.
 
@@ -163,7 +164,10 @@ If `pdftotext` is missing, the tests that need it **skip** locally. With
 `CI=true` in the environment, they **fail fast** instead (`t.Fatal`), so CI
 never silently passes with the independent-reader checks disabled.
 
-CI runs `gofmt`, `go mod tidy -diff`, `go vet`, and `go test -race` on every push.
+CI runs three jobs on every push and pull request: `build` (`gofmt`,
+`go mod tidy -diff`, `go vet`, poppler install, `go test -race -shuffle=on ./...`,
+and a 90% total-coverage floor measured with `-race`), `vuln` (pinned
+`govulncheck`), and `fuzz-smoke` (30s per fuzz target).
 
 ## Repository layout
 
@@ -172,8 +176,9 @@ CI runs `gofmt`, `go mod tidy -diff`, `go vet`, and `go test -race` on every pus
 ├── afp/                  # MO:DCA decoder (sfi, field registry, triplets, code pages)
 ├── line/                 # line-data model + font metrics + exclusions
 ├── afptoline/            # PTOCA state machine, medium resolution, reduction walk
-│   ├── fixtures/         # hand-authored synthetic AFP fixtures (spec-derived, not generated)
-│   └── genfixture/       # fixture generator (assembles hand-authored hex)
+│   ├── fixtures/         # generated .afp fixture corpus (statement, exclusion, medium reference)
+│   ├── genfixture/       # assembles the fixtures from hand-written byte slices, persists them to ../fixtures
+│   └── testdata/fuzz/    # fuzz seed corpora
 ├── linetopdf/            # untagged PDF renderer (pdfcpu)
 ├── docs/
 │   ├── afp-file-format-spec.md   # distilled MO:DCA + MOCA file-format reference
