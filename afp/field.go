@@ -74,13 +74,12 @@ func (f *BDT) Encode() []byte {
 
 // EDT is an End Document structured field (D3A9A8).
 type EDT struct {
-	Intro      Introducer
-	DocName    string
-	HasDocName bool // true when the 8-byte name was present on the wire,
-	// even if it decodes to empty (all-spaces); required for
-	// byte-identical re-encoding. Constructors that set DocName
-	// programmatically must also set HasDocName=true, otherwise
-	// Encode silently drops the name (zero value is name-absent).
+	Intro    Introducer
+	DocName  string
+	BareForm bool // true when decoded from the introducer-only (8-byte) wire
+	// form; Encode then reproduces the bare form byte-identically.
+	// The zero value preserves legacy behavior: a programmatically
+	// constructed EDT (e.g. &EDT{DocName: "REPORT"}) encodes the name.
 	Reserved [2]byte
 	Triplets Triplets
 }
@@ -91,7 +90,7 @@ func (f *EDT) TypeID() string { return f.Intro.TypeIDString() }
 // Encode implements Field.
 func (f *EDT) Encode() []byte {
 	body := make([]byte, 0, 10)
-	if f.HasDocName {
+	if !f.BareForm {
 		body = append(body, encodeCHAR8(f.DocName)...)
 		body = append(body, f.Reserved[0], f.Reserved[1])
 	}
@@ -475,14 +474,9 @@ func decodeEDTField(in Introducer, data []byte) (Field, error) {
 	case len(data) == 0:
 		// Introducer only: no triplet parsing on empty data, there is
 		// nothing to parse.
-		return &EDT{Intro: in, HasDocName: false}, nil
+		return &EDT{Intro: in, BareForm: true}, nil
 	case len(data) >= 10:
-		f, err := decodeDocField("EDT", newEDT)(in, data)
-		if err != nil {
-			return nil, err
-		}
-		f.(*EDT).HasDocName = true
-		return f, nil
+		return decodeDocField("EDT", newEDT)(in, data)
 	default:
 		return nil, DecodeError{
 			FieldID: in.TypeIDString(),

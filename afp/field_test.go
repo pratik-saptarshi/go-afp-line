@@ -100,7 +100,7 @@ var (
 )
 
 func TestDecodeField_BareEDT(t *testing.T) {
-	// 1. bare EDT (8-byte introducer, zero data) → *EDT, HasDocName == false.
+	// 1. bare EDT (8-byte introducer, zero data) → *EDT, BareForm == true.
 	f, err := DecodeField(edtNoName)
 	if err != nil {
 		t.Fatalf("DecodeField(EDT, no name) error: %v", err)
@@ -109,8 +109,8 @@ func TestDecodeField_BareEDT(t *testing.T) {
 	if !ok {
 		t.Fatalf("type = %T, want *EDT", f)
 	}
-	if edt.HasDocName {
-		t.Errorf("HasDocName = true, want false: no name was on the wire")
+	if !edt.BareForm {
+		t.Errorf("BareForm = false, want true: no name was on the wire")
 	}
 	// 2. Encode() of that value → byte-identical to the 8-byte input.
 	if got := f.Encode(); !bytes.Equal(got, edtNoName) {
@@ -135,7 +135,7 @@ func TestDecodeField_BareEDT(t *testing.T) {
 	if derr.Kind != KindStructure {
 		t.Errorf("Kind = %q, want KindStructure", derr.Kind)
 	}
-	// 5. EDT with 10 data bytes → *EDT with HasDocName == true, as before.
+	// 5. EDT with 10 data bytes → *EDT with BareForm == false, as before.
 	f, err = DecodeField(edtHello)
 	if err != nil {
 		t.Fatalf("DecodeField(EDT) error: %v", err)
@@ -144,8 +144,18 @@ func TestDecodeField_BareEDT(t *testing.T) {
 	if !ok {
 		t.Fatalf("type = %T, want *EDT", f)
 	}
-	if !edt.HasDocName {
-		t.Errorf("HasDocName = false, want true: the 8-byte name was on the wire")
+	if edt.BareForm {
+		t.Errorf("BareForm = true, want false: the 8-byte name was on the wire")
+	}
+	// 6. Legacy direct construction (&EDT{DocName: "REPORT"}) must keep
+	// encoding the name: the zero value preserves pre-flag behavior.
+	legacy := &EDT{DocName: "REPORT"}
+	enc := legacy.Encode()
+	if len(enc) != 18 {
+		t.Fatalf("legacy &EDT{DocName} Encode() len = %d, want 18 (name must not be silently dropped)", len(enc))
+	}
+	if got := decodeCHAR(enc[8:16]); got != "REPORT" {
+		t.Errorf("legacy &EDT{DocName} round-trip DocName = %q, want %q", got, "REPORT")
 	}
 }
 
