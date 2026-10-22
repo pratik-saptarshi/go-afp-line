@@ -649,3 +649,36 @@ func TestDecodePTOCA_NELMapsToSpace(t *testing.T) {
 		t.Fatalf("got %q, want %q", runs[0].Text, "H H")
 	}
 }
+
+func TestDecodePTOCA_SEC(t *testing.T) {
+	// Specimen from the 0020 profile file (PTX field #16): chained SEC
+	// (wire type 0x81), RGB white, followed by a chain-ending AMI and text.
+	// SEC must not abort decoding and must not move the presentation
+	// position (record-without-applying, mirroring STC).
+	p := []byte{0x2B, 0xD3, 0x0F, 0x81,
+		0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x08, 0x08, 0x08, 0x00, 0xFF, 0xFF, 0xFF,
+		0x04, 0xC6, 0x00, 0x00, // unchained AMI ends the chain
+	}
+	p = append(p, trn(0xC1)...) // "A"
+	runs := decode(t, p)
+	if len(runs) != 1 || runs[0].Text != "A" {
+		t.Fatalf("runs = %+v, want single run A", runs)
+	}
+	approx(t, "X", runs[0].X, 0)
+	approx(t, "Y", runs[0].Y, 0)
+
+	// Unchained SEC (0x80) likewise decodes without abort.
+	p2 := append(seq(0x80, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x08, 0x08, 0x08, 0x00, 0x21, 0x96, 0xF3), trn(0xC1)...)
+	runs = decode(t, p2)
+	if len(runs) != 1 || runs[0].Text != "A" {
+		t.Fatalf("unchained SEC: runs = %+v, want single run A", runs)
+	}
+
+	// LENGTH outside IBM's 14-16 (params 12-14) is a loud error, not silent.
+	for _, l := range []int{13, 17} {
+		bad := append([]byte{0x2B, 0xD3, byte(l), 0x80}, make([]byte, l-2)...)
+		if _, err := DecodePTOCA(ptxField(bad), testCP(t)); err == nil {
+			t.Errorf("SEC length %d: expected error, got nil", l)
+		}
+	}
+}
