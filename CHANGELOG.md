@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 - Object-container fields BOC/EOC/OCD (contract §9) no longer abort the decode; they decode as excluded `RawField` passthrough.
+- `Reduce` accepts the 6 newly contracted structural SFIDs (BPF/EPF, BRS/ERS, PGD, MDR) with note-and-continue and census-derived position guards instead of aborting; no v1 content semantics. IOB stays excluded and flows through the existing exclusion path.
 
 ## [0.1.0-beta.1] - 2026-10-21
 

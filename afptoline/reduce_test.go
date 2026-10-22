@@ -1138,6 +1138,75 @@ func TestReduce_BNGENGAndMCFValid(t *testing.T) {
 	}
 }
 
+// TestReduce_ProfileCensusOrder: the Step-1 census of 01_Health_Coverage.afp
+// restricted to the 10 newly registered SFIDs, in census order, reduces
+// without abort: the 4 excluded SFIDs (BOC/EOC/OCD/IOB) become exclusions,
+// and the 6 contracted SFIDs (BPF/EPF, BRS/ERS, PGD, MDR) are accepted and
+// noted under their position guards. BDT/EDT are the census scaffolding the
+// guards demand: PGD/MDR require st.inDoc, BPF/EPF/BRS/ERS require !st.inDoc.
+// No bare EDT: bare-EDT stream coverage is Task 4's, not this test's.
+func TestReduce_ProfileCensusOrder(t *testing.T) {
+	tBPF := [3]byte{0xD3, 0xA8, 0xA5}
+	tEPF := [3]byte{0xD3, 0xA9, 0xA5}
+	tBRS := [3]byte{0xD3, 0xA8, 0xCE}
+	tERS := [3]byte{0xD3, 0xA9, 0xCE}
+	tPGD := [3]byte{0xD3, 0xA6, 0xAF}
+	tMDR := [3]byte{0xD3, 0xAB, 0xC3}
+	tBOC := [3]byte{0xD3, 0xA8, 0x92}
+	tEOC := [3]byte{0xD3, 0xA9, 0x92}
+	tOCD := [3]byte{0xD3, 0xEE, 0x92}
+	tIOB := [3]byte{0xD3, 0xAF, 0xC3}
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+
+	// Census order (Step-1 dump): BPF(0), BRS(2), BOC(3), OCD(4), EOC(5),
+	// ERS(6), BDT(8), MDR(11), PGD(12), IOB(18), EDT(23), EPF(24).
+	var buf bytes.Buffer
+	for _, f := range [][]byte{
+		rawField(tBPF, nil),
+		rawField(tBRS, nil),
+		rawField(tBOC, nil),
+		rawField(tOCD, nil),
+		rawField(tEOC, nil),
+		rawField(tERS, nil),
+		bdt,
+		rawField(tMDR, nil),
+		rawField(tPGD, nil),
+		rawField(tIOB, nil),
+		edt,
+		rawField(tEPF, nil),
+	} {
+		buf.Write(f)
+	}
+	doc, excls, err := Reduce(&buf)
+	if err != nil {
+		t.Fatalf("Reduce: %v", err)
+	}
+	if len(doc.Pages) != 0 {
+		t.Fatalf("got %d pages, want 0", len(doc.Pages))
+	}
+	// Exclusions recorded exactly for the 4 excluded SFIDs, in census order.
+	wantExcl := []string{"BOC", "OCD", "EOC", "IOB"}
+	if len(excls) != len(wantExcl) {
+		t.Fatalf("got %d exclusions, want %d: %v", len(excls), len(wantExcl), excls)
+	}
+	for i, want := range wantExcl {
+		if excls[i].FieldType != want {
+			t.Errorf("exclusion %d: FieldType = %q, want %q", i, excls[i].FieldType, want)
+		}
+	}
+	// The 6 contracted SFIDs are accepted and noted: zero exclusions and
+	// zero aborts for them — the exact-4 exclusion set above plus the nil
+	// error already establish this; pin it explicitly against a mutant that
+	// records a contracted SFID as excluded instead of noting it.
+	for _, e := range excls {
+		switch e.FieldType {
+		case "BPF", "EPF", "BRS", "ERS", "PGD", "MDR":
+			t.Errorf("contracted SFID %q recorded as exclusion: %v", e.FieldType, e)
+		}
+	}
+}
+
 // bogusField implements afp.Field with a concrete type the reducer's visit
 // switch never names: it reaches the defensive default branch.
 type bogusField struct{}
