@@ -1,7 +1,5 @@
 # Gap remediation (DAP Decision 0021) Implementation Plan — v2 (wringer-rewritten)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Remediate, in the go-afp-line library, the mechanical gaps DAP Decision 0021 recorded against v0.1.0-beta.1 — 10 unregistered SFIDs aborting `DecodeField`, 6 of them additionally aborting `Reduce`, and the bare-EDT length strictness — so the owner-approved 0020 profile file decodes without abort and reduces without abort on the contracted subset. (Real-file `Reduce` outcome recorded under Test Plan: it aborts on the contract-correct afplib-only PTOCA `0x80` diagnostic — a parked product decision, not a defect of this plan.) This is library improvement work; it is **not** the DAP adoption decision.
 
 **Architecture:** Table-driven registry extension in `afp/field.go` (10 new rows reusing the existing `kindContracted`/`kindExcluded` → `*RawField` passthrough), accept-and-note cases for the 6 contracted SFIDs in `afptoline/reduce.go`'s `visitRaw` (the abort lives there, not just in the registry), and a BPG-style presence flag for the introducer-only EDT form so byte-identical re-encoding is preserved. No new dependencies, no API shape changes; the default contract (unknown SFID aborts) is preserved.
@@ -31,7 +29,7 @@ Decision 0021 reserves the remediation path as an owner/product call: "(a) a reg
 - `CHANGELOG.md` follows Keep a Changelog: every user-facing change gets an `[Unreleased]` entry.
 - No new module dependencies. Process docs stay under `docs/process/`.
 - Task 5 is DECISION-GATED: do not implement without Pratik's explicit go-ahead naming it.
-- The real profile file `/home/hatch/workspace/afp-samples/health/01_Health_Coverage.afp` (12,784 bytes, SHA-256 `553a336db9283ebbf85092320b68c060aacdbea4138fa720810f09431f86b73a` — verified 2026-10-22) is **read-only test input**. It is outside both repos: use it for local verification, never commit it.
+- The real profile file `01_Health_Coverage.afp` (local hash-verified copy) (12,784 bytes, SHA-256 `553a336db9283ebbf85092320b68c060aacdbea4138fa720810f09431f86b73a` — verified 2026-10-22) is **read-only test input**. It is outside both repos: use it for local verification, never commit it.
 
 ## Review Focus
 
@@ -163,7 +161,7 @@ git commit -m "feat(afp): register 7 structural SFIDs as contracted passthrough"
 
 **Rationale:** `DecodeField` returning `*RawField{Excluded:false}` is not the end of the pipeline — `visitRaw`'s `default` branch fails with "contracted field without v1 reduction semantics". Registry-only changes cannot make `Reduce` succeed. This task was missing from the v1 draft entirely.
 
-- [ ] **Step 1: Dump the real census.** With a scratch driver (in `/tmp`, read-only input — never copy the profile file into the repo), run `SplitFields` over `/home/hatch/workspace/afp-samples/health/01_Health_Coverage.afp` and record the ordered SFID sequence with nesting-relevant positions (especially: BPF before BDT, EPF after EDT, and where BRS/ERS/PGD/MDR/IOB and BOC/EOC/OCD sit). Checkable result: the ordered 25-SFID list in the task notes. The stream test in Step 4 models this order — it is derived, not invented.
+- [ ] **Step 1: Dump the real census.** With a scratch driver (in `/tmp`, read-only input — never copy the profile file into the repo), run `SplitFields` over `01_Health_Coverage.afp` (local hash-verified copy) and record the ordered SFID sequence with nesting-relevant positions (especially: BPF before BDT, EPF after EDT, and where BRS/ERS/PGD/MDR/IOB and BOC/EOC/OCD sit). Checkable result: the ordered 25-SFID list in the task notes. The stream test in Step 4 models this order — it is derived, not invented.
 - [ ] **Step 2: Write the failing test** — reduce a synthetic stream in the Step 1 order containing all 10 new SFIDs plus the bare EDT:
 
 ```go
@@ -269,7 +267,7 @@ git commit -m "fix(afp): accept introducer-only EDT with byte-identical re-encod
 
 - Per-task: `go test` RED then GREEN as specified in each task's steps; mutation check per the repo bar (revert the guarded logic, observe FAIL, restore).
 - After Task 4: full `go test ./...`, `go vet ./...`, `gofmt -l .` empty — the repo's pre-PR gate.
-- Real-file acceptance (runnable locally — no longer an external dependency): the hash-verified `/home/hatch/workspace/afp-samples/health/01_Health_Coverage.afp` (read-only; never commit it):
+- Real-file acceptance (runnable locally — no longer an external dependency): the hash-verified `01_Health_Coverage.afp` (local hash-verified copy) (read-only; never commit it):
   - `SplitFields` → 25 fields, no error; `DecodeField` each → no aborts;
   - `Reduce` → ABORTS with `unknown PTOCA control sequence 0x80` (chained sequence, unchained base 0x80, inside a PTX field at stream offset ~6064). This is contract-correct strict-subset behavior, not a defect of this plan: 0x80 is afplib-only and deliberately excluded from the contracted subset by the 2-of-3 source rule (subset-contract.md §5; docs/_evidence/contract-research.md:232), and `afptoline/ptoca.go` is untouched by this plan. Parked product decision for the owner: amend the contract to admit afplib-only PTOCA codes (needs IBM-source verification of 0x80's semantics) OR accept the loud 0x80 diagnostic as the expected real-file outcome;
   - `RoundTrip` → byte-identical (this is what caught the v1 draft's Task 3 defect — it stays in the gate).
