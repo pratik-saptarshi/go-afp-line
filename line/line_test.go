@@ -228,6 +228,16 @@ func TestExclusion_Diagnostic(t *testing.T) {
 		}
 	})
 
+	t.Run("IOB inclusion references are classified per the contract", func(t *testing.T) {
+		e, ok := ClassifyExclusion("IOB")
+		if !ok {
+			t.Fatal("ClassifyExclusion(IOB) not found; include-object references must be classified as excluded")
+		}
+		if !strings.Contains(e.Diagnostic(), "include-object") {
+			t.Fatalf("diagnostic %q does not name include-object references", e.Diagnostic())
+		}
+	})
+
 	t.Run("in-subset field is not an exclusion", func(t *testing.T) {
 		if _, ok := ClassifyExclusion("PTX"); ok {
 			t.Fatal("ClassifyExclusion(PTX) found; PTX is in-subset, not an exclusion")

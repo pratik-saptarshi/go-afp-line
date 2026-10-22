@@ -96,6 +96,7 @@ var closedExclusions = map[string]string{
 	"BOC": "object containers are outside the v1 contracted subset",
 	"EOC": "object containers are outside the v1 contracted subset",
 	"OCD": "object containers are outside the v1 contracted subset",
+	"IOB": "include-object references are outside the v1 contracted subset",
 	// Misc skip
 	"NOP": "no-operation fields carry no content",
 	"TLE": "tag logical elements carry indexing metadata, not presentation content",
