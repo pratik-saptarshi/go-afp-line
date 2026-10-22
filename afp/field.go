@@ -352,7 +352,28 @@ func Acronym(typeID string) (string, bool) {
 	return spec.name, true
 }
 
+// DecodeFieldLenient is the opt-in lenient variant of DecodeField, for
+// preflight-style diagnostics over files that may carry unregistered
+// structured fields. It is identical to DecodeField except for one fork:
+// an unregistered SFID returns an excluded *RawField (Excluded=true,
+// raw bytes preserved, nil error) instead of the KindValidation abort.
+// Malformed framing still errors in both modes; the default DecodeField
+// fail-fast contract is unchanged.
+func DecodeFieldLenient(b []byte) (Field, error) {
+	return decodeField(b, true)
+}
+
 func DecodeField(b []byte) (Field, error) {
+	return decodeField(b, false)
+}
+
+// decodeField is the shared post-framing dispatch used by both DecodeField
+// (strict, the deliberate fail-fast default) and DecodeFieldLenient
+// (opt-in). The only behavioral fork is the unregistered-SFID branch:
+// strict aborts with a KindValidation DecodeError; lenient returns the
+// field as an excluded *RawField. Framing validation and registry dispatch
+// are shared verbatim — leniency never weakens them.
+func decodeField(b []byte, lenient bool) (Field, error) {
 	in, err := decodeIntroducer(b)
 	if err != nil {
 		return nil, err
@@ -366,8 +387,12 @@ func DecodeField(b []byte) (Field, error) {
 				len(b), in.Length),
 		}
 	}
+	data := b[in.HeaderLength():]
 	spec, ok := fieldRegistry[in.TypeID]
 	if !ok {
+		if lenient {
+			return &RawField{Intro: in, Data: cloneBytes(data), Excluded: true}, nil
+		}
 		return nil, DecodeError{
 			FieldID: in.TypeIDString(),
 			Offset:  0,
@@ -375,7 +400,6 @@ func DecodeField(b []byte) (Field, error) {
 			Reason:  "unknown structured field type: aborting (not in contracted subset)",
 		}
 	}
-	data := b[in.HeaderLength():]
 	switch spec.kind {
 	case kindTyped:
 		return spec.decode(in, data)

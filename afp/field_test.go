@@ -90,6 +90,13 @@ var (
 		0x00, 0x10, 0xD3, 0xA8, 0xA5, 0x00, 0x00, 0x00,
 		0x00, 0x00, 0x00, 0x00,
 	}
+	// Unknown type D3FFFF claiming SFLength=16 but carrying only 12 bytes
+	// total: framing must fail with KindStructure even in lenient mode —
+	// leniency never weakens framing validation.
+	unknownLengthMismatch = []byte{
+		0x00, 0x10, 0xD3, 0xFF, 0xFF, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+	}
 )
 
 func TestDecodeField_BareEDT(t *testing.T) {
@@ -395,6 +402,113 @@ func TestDecodeField_NewTypeMalformedFraming(t *testing.T) {
 	}
 	if derr.FieldID != "D3A892" {
 		t.Errorf("DecodeError.FieldID = %q, want %q", derr.FieldID, "D3A892")
+	}
+}
+
+// TestDecodeFieldLenient_UnknownTypePassthrough pins the Task 5 opt-in
+// contract: an unregistered SFID decodes as an excluded *RawField under
+// DecodeFieldLenient, while the SAME input still aborts with the exact
+// KindValidation error under DecodeField (the fail-fast default is
+// deliberate and unchanged).
+func TestDecodeFieldLenient_UnknownTypePassthrough(t *testing.T) {
+	f, err := DecodeFieldLenient(unknownField)
+	if err != nil {
+		t.Fatalf("DecodeFieldLenient(D3FFFF) error: %v (unknown types must passthrough, not error)", err)
+	}
+	raw, ok := f.(*RawField)
+	if !ok {
+		t.Fatalf("DecodeFieldLenient(D3FFFF) type = %T, want *RawField", f)
+	}
+	if !raw.Excluded {
+		t.Errorf("RawField.Excluded = false, want true: unregistered types are out-of-subset")
+	}
+	if f.TypeID() != "D3FFFF" {
+		t.Errorf("TypeID() = %q, want %q", f.TypeID(), "D3FFFF")
+	}
+	if !bytes.Equal(raw.Encode(), unknownField) {
+		t.Errorf("Encode() = %X, want input bytes %X", raw.Encode(), unknownField)
+	}
+	// The strict default must be byte-for-byte the existing abort.
+	_, err = DecodeField(unknownField)
+	derr, ok := err.(DecodeError)
+	if !ok {
+		t.Fatalf("DecodeField(D3FFFF) error = %T (%v), want DecodeError", err, err)
+	}
+	if derr.Kind != KindValidation {
+		t.Errorf("DecodeError.Kind = %v, want KindValidation", derr.Kind)
+	}
+	if want := "unknown structured field type: aborting (not in contracted subset)"; derr.Reason != want {
+		t.Errorf("DecodeError.Reason = %q, want %q", derr.Reason, want)
+	}
+	if derr.FieldID != "D3FFFF" {
+		t.Errorf("DecodeError.FieldID = %q, want %q", derr.FieldID, "D3FFFF")
+	}
+}
+
+// TestDecodeFieldLenient_MalformedFramingStillErrors pins that framing
+// violations abort with KindStructure in BOTH modes: leniency only touches
+// the unknown-type lookup, never the SFLength/structural validation.
+func TestDecodeFieldLenient_MalformedFramingStillErrors(t *testing.T) {
+	for _, decode := range []struct {
+		name string
+		fn   func([]byte) (Field, error)
+	}{
+		{"strict", DecodeField},
+		{"lenient", DecodeFieldLenient},
+	} {
+		_, err := decode.fn(unknownLengthMismatch)
+		derr, ok := err.(DecodeError)
+		if !ok {
+			t.Fatalf("%s(D3FFFF, length-mismatched) error = %T (%v), want DecodeError", decode.name, err, err)
+		}
+		if derr.Kind != KindStructure {
+			t.Errorf("%s: DecodeError.Kind = %v, want KindStructure", decode.name, derr.Kind)
+		}
+		if want := "field byte count 12 does not match SFLength 16"; derr.Reason != want {
+			t.Errorf("%s: DecodeError.Reason = %q, want %q", decode.name, derr.Reason, want)
+		}
+		if derr.FieldID != "D3FFFF" {
+			t.Errorf("%s: DecodeError.FieldID = %q, want %q", decode.name, derr.FieldID, "D3FFFF")
+		}
+	}
+}
+
+// TestDecodeFieldLenient_RegisteredTypesIdentical pins that registered types
+// decode identically in both modes: typed (BDT), contracted (BPF), excluded
+// (BGR) — the fork is unreachable for them, so mode must not matter.
+func TestDecodeFieldLenient_RegisteredTypesIdentical(t *testing.T) {
+	vectors := []struct {
+		name string
+		raw  []byte
+		want interface{}
+	}{
+		{"BDT", bdtHello, &BDT{}},
+		{"BPF", bpfContracted, &RawField{}},
+		{"BGR", bgrExcluded, &RawField{}},
+	}
+	for _, v := range vectors {
+		sf, err := DecodeField(v.raw)
+		if err != nil {
+			t.Fatalf("DecodeField(%s) error: %v", v.name, err)
+		}
+		lf, err := DecodeFieldLenient(v.raw)
+		if err != nil {
+			t.Fatalf("DecodeFieldLenient(%s) error: %v", v.name, err)
+		}
+		if fmt.Sprintf("%T", sf) != fmt.Sprintf("%T", v.want) || fmt.Sprintf("%T", lf) != fmt.Sprintf("%T", v.want) {
+			t.Errorf("%s: strict type = %T, lenient type = %T, want %T", v.name, sf, lf, v.want)
+		}
+		if sraw, ok := sf.(*RawField); ok {
+			lraw := lf.(*RawField)
+			if sraw.Excluded != lraw.Excluded {
+				t.Errorf("%s: strict Excluded = %v, lenient Excluded = %v, must match",
+					v.name, sraw.Excluded, lraw.Excluded)
+			}
+		}
+		if !bytes.Equal(sf.Encode(), lf.Encode()) || !bytes.Equal(sf.Encode(), v.raw) {
+			t.Errorf("%s: strict/lenient Encode() differ or diverge from input: strict=%X lenient=%X input=%X",
+				v.name, sf.Encode(), lf.Encode(), v.raw)
+		}
 	}
 }
 

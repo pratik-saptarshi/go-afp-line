@@ -177,6 +177,18 @@ continues; malformed fields abort with a typed `DecodeError`. Nothing is silent.
   excluded rather than contracted (DAP-0021 Task 2 caveat).
 - **Misc skip:** NOP, TLE, IPS, MPS.
 
+### Opt-in lenient decode (generalization beyond the contracted subset)
+
+The fail-fast default is deliberate and unchanged: `DecodeField` aborts with a
+typed `DecodeError` (`KindValidation`) on an unregistered SFID. For
+preflight-style diagnostics over files that may carry unregistered fields,
+`afp.DecodeFieldLenient` is an opt-in alternative — identical to `DecodeField`
+except an unregistered SFID returns an excluded `*RawField` (`Excluded=true`,
+bytes preserved) instead of aborting. Malformed framing (introducer or
+`SFLength` mismatch) still errors with `KindStructure` in both modes:
+leniency never weakens framing validation. Contracted-subset guarantees
+(§3) are unchanged by either mode.
+
 ## 10. Framing contract
 
 The decoder accepts both **naked MO:DCA streams** and **`5A`-wrapped variable-blocked
