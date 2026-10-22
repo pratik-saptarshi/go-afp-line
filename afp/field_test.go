@@ -48,6 +48,20 @@ var (
 	ocdExcluded = []byte{0x00, 0x08, 0xD3, 0xEE, 0x92, 0x00, 0x00, 0x00}
 	// PTX (D3EE9B): contracted in-subset, typed decoder arrives in Task 6.
 	ptxContracted = []byte{0x00, 0x08, 0xD3, 0xEE, 0x9B, 0x00, 0x00, 0x00}
+	// Structural envelope/resource/page-map fields (DAP-0021 Task 2):
+	// BPF/EPF (Begin/End Print File), BRS/ERS (Begin/End Resource),
+	// PGD (Page Descriptor), MDR (Map Data Resource) — contracted
+	// in-subset per the contract §3; typed decoders arrive in later tasks.
+	bpfContracted = []byte{0x00, 0x08, 0xD3, 0xA8, 0xA5, 0x00, 0x00, 0x00}
+	epfContracted = []byte{0x00, 0x08, 0xD3, 0xA9, 0xA5, 0x00, 0x00, 0x00}
+	brsContracted = []byte{0x00, 0x08, 0xD3, 0xA8, 0xCE, 0x00, 0x00, 0x00}
+	ersContracted = []byte{0x00, 0x08, 0xD3, 0xA9, 0xCE, 0x00, 0x00, 0x00}
+	pgdContracted = []byte{0x00, 0x08, 0xD3, 0xA6, 0xAF, 0x00, 0x00, 0x00}
+	mdrContracted = []byte{0x00, 0x08, 0xD3, 0xAB, 0xC3, 0x00, 0x00, 0x00}
+	// IOB (Include Object, D3AFC3): known-excluded per the DAP-0021 Task 2
+	// caveat — the profile file's IOB includes an object container whose
+	// OCD payload is JPEG image data (content-bearing, excluded class).
+	iobExcluded = []byte{0x00, 0x08, 0xD3, 0xAF, 0xC3, 0x00, 0x00, 0x00}
 	// BDT claiming 12 bytes but carrying only 4 data bytes: truncated data.
 	bdtTruncatedData = []byte{
 		0x00, 0x0C, 0xD3, 0xA8, 0xA8, 0x00, 0x00, 0x00,
@@ -57,6 +71,13 @@ var (
 	// only 12 bytes total: framing must still fail with KindStructure.
 	bocLengthMismatch = []byte{
 		0x00, 0x10, 0xD3, 0xA8, 0x92, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+	}
+	// BPF (newly-registered contracted type) claiming SFLength=16 but
+	// carrying only 12 bytes total: framing must still fail with
+	// KindStructure, never silent passthrough.
+	bpfLengthMismatch = []byte{
+		0x00, 0x10, 0xD3, 0xA8, 0xA5, 0x00, 0x00, 0x00,
 		0x00, 0x00, 0x00, 0x00,
 	}
 )
@@ -192,6 +213,10 @@ func TestDecodeField_ObjectContainerExcluded(t *testing.T) {
 		{"BOC", bocExcluded, "D3A892"},
 		{"EOC", eocExcluded, "D3A992"},
 		{"OCD", ocdExcluded, "D3EE92"},
+		// IOB is excluded per the DAP-0021 Task 2 caveat: the profile
+		// file's IOB includes an object container whose OCD payload is
+		// JPEG image data (content-bearing, excluded class).
+		{"IOB", iobExcluded, "D3AFC3"},
 	}
 	for _, v := range vectors {
 		f, err := DecodeField(v.raw)
@@ -213,6 +238,66 @@ func TestDecodeField_ObjectContainerExcluded(t *testing.T) {
 		if !bytes.Equal(raw.Encode(), v.raw) {
 			t.Errorf("DecodeField(%s): Encode() = %X, want input bytes %X", v.name, raw.Encode(), v.raw)
 		}
+	}
+}
+
+// TestDecodeField_StructuralContracted pins the DAP-0021 Task 2
+// registrations: the structural envelope/resource/page-map fields decode as
+// *RawField with Excluded=false (contracted in-subset; typed decoders arrive
+// in later tasks), never an error.
+func TestDecodeField_StructuralContracted(t *testing.T) {
+	vectors := []struct {
+		name   string
+		raw    []byte
+		typeID string
+	}{
+		{"BPF", bpfContracted, "D3A8A5"},
+		{"EPF", epfContracted, "D3A9A5"},
+		{"BRS", brsContracted, "D3A8CE"},
+		{"ERS", ersContracted, "D3A9CE"},
+		{"PGD", pgdContracted, "D3A6AF"},
+		{"MDR", mdrContracted, "D3ABC3"},
+	}
+	for _, v := range vectors {
+		f, err := DecodeField(v.raw)
+		if err != nil {
+			t.Errorf("DecodeField(%s) error: %v (contracted fields must not error)", v.name, err)
+			continue
+		}
+		raw, ok := f.(*RawField)
+		if !ok {
+			t.Errorf("DecodeField(%s) type = %T, want *RawField", v.name, f)
+			continue
+		}
+		if raw.Excluded {
+			t.Errorf("DecodeField(%s): RawField.Excluded = true, want false: contracted, not excluded", v.name)
+		}
+		if f.TypeID() != v.typeID {
+			t.Errorf("DecodeField(%s): TypeID() = %q, want %q", v.name, f.TypeID(), v.typeID)
+		}
+		if !bytes.Equal(raw.Encode(), v.raw) {
+			t.Errorf("DecodeField(%s): Encode() = %X, want input bytes %X", v.name, raw.Encode(), v.raw)
+		}
+	}
+}
+
+// TestDecodeField_ContractedMalformedFraming pins that a contracted type
+// with a framing violation fails with KindStructure before the registry is
+// consulted: 12 bytes on the wire against a claimed SFLength of 16.
+func TestDecodeField_ContractedMalformedFraming(t *testing.T) {
+	_, err := DecodeField(bpfLengthMismatch)
+	derr, ok := err.(DecodeError)
+	if !ok {
+		t.Fatalf("DecodeField(length-mismatched BPF) error = %T (%v), want DecodeError", err, err)
+	}
+	if derr.Kind != KindStructure {
+		t.Errorf("DecodeError.Kind = %v, want KindStructure", derr.Kind)
+	}
+	if want := "field byte count 12 does not match SFLength 16"; derr.Reason != want {
+		t.Errorf("DecodeError.Reason = %q, want %q", derr.Reason, want)
+	}
+	if derr.FieldID != "D3A8A5" {
+		t.Errorf("DecodeError.FieldID = %q, want %q", derr.FieldID, "D3A8A5")
 	}
 }
 
@@ -277,6 +362,14 @@ func TestRegistryMatchesContract(t *testing.T) {
 		"D3EE9B": {"PTX", kindContracted},
 		"D3AB8A": {"MCF", kindContracted},
 		"D3B19B": {"PTD", kindContracted},
+		// Structural envelope/resource/page-map fields (contract §3,
+		// DAP-0021 Task 2; IBM MODCA-Reference-09 primary).
+		"D3A8A5": {"BPF", kindContracted},
+		"D3A9A5": {"EPF", kindContracted},
+		"D3A8CE": {"BRS", kindContracted},
+		"D3A9CE": {"ERS", kindContracted},
+		"D3A6AF": {"PGD", kindContracted},
+		"D3ABC3": {"MDR", kindContracted},
 		// Known-excluded per the contract §9 closed exclusion list.
 		// IOCA (excluded)
 		"D3A8FB": {"BIM", kindExcluded},
@@ -352,6 +445,10 @@ func TestRegistryMatchesContract(t *testing.T) {
 		"D3A892": {"BOC", kindExcluded},
 		"D3A992": {"EOC", kindExcluded},
 		"D3EE92": {"OCD", kindExcluded},
+		// IOB: excluded per the DAP-0021 Task 2 caveat (profile file's
+		// IOB includes an object container whose OCD payload is JPEG
+		// image data), not contracted.
+		"D3AFC3": {"IOB", kindExcluded},
 	}
 
 	got := make(map[string]fieldSpec, len(fieldRegistry))
@@ -406,6 +503,8 @@ func TestField_RoundTrip(t *testing.T) {
 	vectors := [][]byte{
 		bdtHello, edtHello, bpgPage, epgPage, bpgNoName,
 		bgrExcluded, ptxContracted,
+		bpfContracted, epfContracted, brsContracted, ersContracted,
+		pgdContracted, mdrContracted, iobExcluded,
 	}
 	for i, v := range vectors {
 		f, err := DecodeField(v)

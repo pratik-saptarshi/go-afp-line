@@ -208,6 +208,21 @@ func buildRegistry() map[[3]byte]fieldSpec {
 		{[3]byte{0xD3, 0xEE, 0x9B}, "PTX"},
 		{[3]byte{0xD3, 0xAB, 0x8A}, "MCF"},
 		{[3]byte{0xD3, 0xB1, 0x9B}, "PTD"},
+		// Structural envelope/resource/page-map fields (contract §3),
+		// verified DAP-0021 Task 2 against the IBM MODCA-Reference-09
+		// primary source (one line per SFID):
+		//   D3A8A5 BPF — Begin Print File (IBM primary)
+		//   D3A9A5 EPF — End Print File (IBM primary)
+		//   D3A8CE BRS — Begin Resource (IBM primary; openafp/parse-afp say BR/ER)
+		//   D3A9CE ERS — End Resource (IBM primary; openafp/parse-afp say BR/ER)
+		//   D3A6AF PGD — Page Descriptor (IBM primary; corroborated openafp + parse-afp + afplib)
+		//   D3ABC3 MDR — Map Data Resource (IBM primary; corroborated openafp + parse-afp + afplib)
+		{[3]byte{0xD3, 0xA8, 0xA5}, "BPF"},
+		{[3]byte{0xD3, 0xA9, 0xA5}, "EPF"},
+		{[3]byte{0xD3, 0xA8, 0xCE}, "BRS"},
+		{[3]byte{0xD3, 0xA9, 0xCE}, "ERS"},
+		{[3]byte{0xD3, 0xA6, 0xAF}, "PGD"},
+		{[3]byte{0xD3, 0xAB, 0xC3}, "MDR"},
 	} {
 		reg[e.id] = fieldSpec{name: e.name, kind: kindContracted}
 	}
@@ -290,6 +305,13 @@ func buildRegistry() map[[3]byte]fieldSpec {
 		{[3]byte{0xD3, 0xA8, 0x92}, "BOC"},
 		{[3]byte{0xD3, 0xA9, 0x92}, "EOC"},
 		{[3]byte{0xD3, 0xEE, 0x92}, "OCD"},
+		// IOB (Include Object, D3AFC3): excluded, not contracted, per the
+		// DAP-0021 Task 2 caveat. IBM MODCA-Reference-09 names it
+		// "Include Object", but in the profile file the IOB includes
+		// object "I0000001" (ObjType X'92', Other object data) whose
+		// matching OCD payload is JPEG image data — content-bearing,
+		// excluded-class content — so it decodes as excluded.
+		{[3]byte{0xD3, 0xAF, 0xC3}, "IOB"},
 	} {
 		reg[e.id] = fieldSpec{name: e.name, kind: kindExcluded}
 	}
