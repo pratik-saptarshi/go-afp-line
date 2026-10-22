@@ -78,7 +78,9 @@ type EDT struct {
 	DocName    string
 	HasDocName bool // true when the 8-byte name was present on the wire,
 	// even if it decodes to empty (all-spaces); required for
-	// byte-identical re-encoding
+	// byte-identical re-encoding. Constructors that set DocName
+	// programmatically must also set HasDocName=true, otherwise
+	// Encode silently drops the name (zero value is name-absent).
 	Reserved [2]byte
 	Triplets Triplets
 }
