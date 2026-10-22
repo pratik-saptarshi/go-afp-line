@@ -139,9 +139,10 @@ func (f *EPG) Encode() []byte {
 // RawField is an opaque passthrough for a well-formed field that has no
 // typed decoder yet. Excluded is true when the field is known-excluded by
 // the subset contract (out-of-subset: IOCA, GOCA, BCOCA, FOCA, CMOCA,
-// overlays/medium); false when the field is contracted in-subset but its
-// typed decoder arrives in a later task (e.g. PTX in Task 6). The raw bytes
-// are always preserved so re-encoding stays byte-identical.
+// overlays/medium, object containers); false when the field is contracted
+// in-subset but its typed decoder arrives in a later task (e.g. PTX in
+// Task 6). The raw bytes are always preserved so re-encoding stays
+// byte-identical.
 type RawField struct {
 	Intro    Introducer
 	Data     []byte // field data after the introducer, verbatim
@@ -285,6 +286,10 @@ func buildRegistry() map[[3]byte]fieldSpec {
 		{[3]byte{0xD3, 0xA0, 0x90}, "TLE"},
 		{[3]byte{0xD3, 0xAF, 0x5F}, "IPS"},
 		{[3]byte{0xD3, 0xB1, 0x5F}, "MPS"},
+		// Object containers (contract §9 — excluded)
+		{[3]byte{0xD3, 0xA8, 0x92}, "BOC"},
+		{[3]byte{0xD3, 0xA9, 0x92}, "EOC"},
+		{[3]byte{0xD3, 0xEE, 0x92}, "OCD"},
 	} {
 		reg[e.id] = fieldSpec{name: e.name, kind: kindExcluded}
 	}

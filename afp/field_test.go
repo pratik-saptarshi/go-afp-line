@@ -2,6 +2,7 @@ package afp
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 )
 
@@ -39,12 +40,24 @@ var (
 	unknownField = []byte{0x00, 0x08, 0xD3, 0xFF, 0xFF, 0x00, 0x00, 0x00}
 	// BGR (Begin Graphics, D3A8BB): known-excluded per the subset contract.
 	bgrExcluded = []byte{0x00, 0x08, 0xD3, 0xA8, 0xBB, 0x00, 0x00, 0x00}
+	// BOC (Begin Object Container, D3A892), EOC (D3A992), OCD (Object
+	// Container Data, D3EE92): known-excluded per the contract §9 closed
+	// exclusion list.
+	bocExcluded = []byte{0x00, 0x08, 0xD3, 0xA8, 0x92, 0x00, 0x00, 0x00}
+	eocExcluded = []byte{0x00, 0x08, 0xD3, 0xA9, 0x92, 0x00, 0x00, 0x00}
+	ocdExcluded = []byte{0x00, 0x08, 0xD3, 0xEE, 0x92, 0x00, 0x00, 0x00}
 	// PTX (D3EE9B): contracted in-subset, typed decoder arrives in Task 6.
 	ptxContracted = []byte{0x00, 0x08, 0xD3, 0xEE, 0x9B, 0x00, 0x00, 0x00}
 	// BDT claiming 12 bytes but carrying only 4 data bytes: truncated data.
 	bdtTruncatedData = []byte{
 		0x00, 0x0C, 0xD3, 0xA8, 0xA8, 0x00, 0x00, 0x00,
 		0xC8, 0xC5, 0xD3, 0xD3,
+	}
+	// BOC (newly-registered excluded type) claiming SFLength=16 but carrying
+	// only 12 bytes total: framing must still fail with KindStructure.
+	bocLengthMismatch = []byte{
+		0x00, 0x10, 0xD3, 0xA8, 0x92, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
 	}
 )
 
@@ -167,6 +180,205 @@ func TestDecodeField_ExcludedGOCA(t *testing.T) {
 	}
 	if !bytes.Equal(raw.Encode(), bgrExcluded) {
 		t.Errorf("RawField.Encode() = %X, want input bytes %X", raw.Encode(), bgrExcluded)
+	}
+}
+
+func TestDecodeField_ObjectContainerExcluded(t *testing.T) {
+	vectors := []struct {
+		name   string
+		raw    []byte
+		typeID string
+	}{
+		{"BOC", bocExcluded, "D3A892"},
+		{"EOC", eocExcluded, "D3A992"},
+		{"OCD", ocdExcluded, "D3EE92"},
+	}
+	for _, v := range vectors {
+		f, err := DecodeField(v.raw)
+		if err != nil {
+			t.Errorf("DecodeField(%s) error: %v (excluded fields must not error)", v.name, err)
+			continue
+		}
+		raw, ok := f.(*RawField)
+		if !ok {
+			t.Errorf("DecodeField(%s) type = %T, want *RawField", v.name, f)
+			continue
+		}
+		if !raw.Excluded {
+			t.Errorf("DecodeField(%s): RawField.Excluded = false, want true", v.name)
+		}
+		if f.TypeID() != v.typeID {
+			t.Errorf("DecodeField(%s): TypeID() = %q, want %q", v.name, f.TypeID(), v.typeID)
+		}
+		if !bytes.Equal(raw.Encode(), v.raw) {
+			t.Errorf("DecodeField(%s): Encode() = %X, want input bytes %X", v.name, raw.Encode(), v.raw)
+		}
+	}
+}
+
+func TestDecodeField_UnknownStillAborts(t *testing.T) {
+	_, err := DecodeField(unknownField)
+	derr, ok := err.(DecodeError)
+	if !ok {
+		t.Fatalf("DecodeField(D3FFFF) error = %T (%v), want DecodeError", err, err)
+	}
+	if derr.Kind != KindValidation {
+		t.Errorf("DecodeError.Kind = %v, want KindValidation", derr.Kind)
+	}
+	if want := "unknown structured field type: aborting (not in contracted subset)"; derr.Reason != want {
+		t.Errorf("DecodeError.Reason = %q, want %q", derr.Reason, want)
+	}
+	if derr.FieldID != "D3FFFF" {
+		t.Errorf("DecodeError.FieldID = %q, want %q", derr.FieldID, "D3FFFF")
+	}
+}
+
+func TestDecodeField_NewTypeMalformedFraming(t *testing.T) {
+	// BOC is now a registered excluded type, but framing violations must
+	// still fail before the registry is consulted: 12 bytes on the wire
+	// against a claimed SFLength of 16.
+	_, err := DecodeField(bocLengthMismatch)
+	derr, ok := err.(DecodeError)
+	if !ok {
+		t.Fatalf("DecodeField(length-mismatched BOC) error = %T (%v), want DecodeError", err, err)
+	}
+	if derr.Kind != KindStructure {
+		t.Errorf("DecodeError.Kind = %v, want KindStructure", derr.Kind)
+	}
+	if want := "field byte count 12 does not match SFLength 16"; derr.Reason != want {
+		t.Errorf("DecodeError.Reason = %q, want %q", derr.Reason, want)
+	}
+	if derr.FieldID != "D3A892" {
+		t.Errorf("DecodeError.FieldID = %q, want %q", derr.FieldID, "D3A892")
+	}
+}
+
+// TestRegistryMatchesContract is a tripwire against code/contract drift:
+// the registry's full SFID->(name, kind) set must equal this hardcoded map,
+// which mirrors docs/subset-contract.md §3 (in-scope) and §9 (closed
+// exclusion list). The reviewer checks the map against the contract.
+func TestRegistryMatchesContract(t *testing.T) {
+	want := map[string]struct {
+		name string
+		kind fieldKind
+	}{
+		// Typed in this task (contract §3).
+		"D3A8A8": {"BDT", kindTyped},
+		"D3A9A8": {"EDT", kindTyped},
+		"D3A8AF": {"BPG", kindTyped},
+		"D3A9AF": {"EPG", kindTyped},
+		// Contracted in-subset; typed decoders arrive in later tasks (§3).
+		"D3A8AD": {"BNG", kindContracted},
+		"D3A9AD": {"ENG", kindContracted},
+		"D3A8C9": {"BAG", kindContracted},
+		"D3A9C9": {"EAG", kindContracted},
+		"D3A89B": {"BPT", kindContracted},
+		"D3A99B": {"EPT", kindContracted},
+		"D3EE9B": {"PTX", kindContracted},
+		"D3AB8A": {"MCF", kindContracted},
+		"D3B19B": {"PTD", kindContracted},
+		// Known-excluded per the contract §9 closed exclusion list.
+		// IOCA (excluded)
+		"D3A8FB": {"BIM", kindExcluded},
+		"D3A9FB": {"EIM", kindExcluded},
+		"D3EEFB": {"IPD", kindExcluded},
+		"D3A6FB": {"IDD", kindExcluded},
+		"D3A67B": {"IID", kindExcluded},
+		"D3A77B": {"IOC", kindExcluded},
+		"D3AC7B": {"ICP", kindExcluded},
+		"D3EE7B": {"IRD", kindExcluded},
+		// GOCA (excluded)
+		"D3A8BB": {"BGR", kindExcluded},
+		"D3A9BB": {"EGR", kindExcluded},
+		"D3EEBB": {"GAD", kindExcluded},
+		"D3A6BB": {"GDD", kindExcluded},
+		// BCOCA (excluded)
+		"D3A8EB": {"BBC", kindExcluded},
+		"D3A9EB": {"EBC", kindExcluded},
+		"D3EEEB": {"BDA", kindExcluded},
+		"D3A6EB": {"BDD", kindExcluded},
+		"D3ABEB": {"MBC", kindExcluded},
+		// FOCA (excluded)
+		"D3A88A": {"BCF", kindExcluded},
+		"D3A98A": {"ECF", kindExcluded},
+		"D3A889": {"BFN", kindExcluded},
+		"D3A989": {"EFN", kindExcluded},
+		"D3A887": {"BCP", kindExcluded},
+		"D3A987": {"ECP", kindExcluded},
+		"D3A78A": {"CFC", kindExcluded},
+		"D38C8A": {"CFI", kindExcluded},
+		"D3A787": {"CPC", kindExcluded},
+		"D3A687": {"CPD", kindExcluded},
+		"D38C87": {"CPI", kindExcluded},
+		"D3A789": {"FNC", kindExcluded},
+		"D3A689": {"FND", kindExcluded},
+		"D3EE89": {"FNG", kindExcluded},
+		"D38C89": {"FNI", kindExcluded},
+		"D3A289": {"FNM", kindExcluded},
+		"D3AB89": {"FNN", kindExcluded},
+		"D3AE89": {"FNO", kindExcluded},
+		"D3AC89": {"FNP", kindExcluded},
+		"D3B18A": {"MCF1", kindExcluded},
+		// CMOCA / color (excluded)
+		"D3A877": {"BCA", kindExcluded},
+		"D3A977": {"ECA", kindExcluded},
+		"D3AB77": {"MCA", kindExcluded},
+		"D3B077": {"CAT", kindExcluded},
+		// Overlays / medium (excluded)
+		"D3A8DF": {"BMO", kindExcluded},
+		"D3A9DF": {"EMO", kindExcluded},
+		"D3A8CC": {"BMM", kindExcluded},
+		"D3A9CC": {"EMM", kindExcluded},
+		"D3B1DF": {"MMO", kindExcluded},
+		"D3ABD8": {"MPO", kindExcluded},
+		"D3ABCC": {"IMM", kindExcluded},
+		"D3A288": {"MCC", kindExcluded},
+		"D3A688": {"MDD", kindExcluded},
+		"D3A788": {"MMC", kindExcluded},
+		"D3A8C6": {"BRG", kindExcluded},
+		"D3A9C6": {"ERG", kindExcluded},
+		"D3A8D9": {"BSG", kindExcluded},
+		"D3A9D9": {"ESG", kindExcluded},
+		"D3A8C4": {"BDG", kindExcluded},
+		"D3A9C4": {"EDG", kindExcluded},
+		"D3A8C7": {"BOG", kindExcluded},
+		"D3A9C7": {"EOG", kindExcluded},
+		// Misc skip (excluded, surfaced as diagnostics, never silent)
+		"D3EEEE": {"NOP", kindExcluded},
+		"D3A090": {"TLE", kindExcluded},
+		"D3AF5F": {"IPS", kindExcluded},
+		"D3B15F": {"MPS", kindExcluded},
+		// Object containers (contract §9 — excluded)
+		"D3A892": {"BOC", kindExcluded},
+		"D3A992": {"EOC", kindExcluded},
+		"D3EE92": {"OCD", kindExcluded},
+	}
+
+	got := make(map[string]fieldSpec, len(fieldRegistry))
+	for id, spec := range fieldRegistry {
+		key := fmt.Sprintf("%02X%02X%02X", id[0], id[1], id[2])
+		got[key] = spec
+	}
+	if len(got) != len(want) {
+		t.Errorf("registry has %d entries, contract map has %d", len(got), len(want))
+	}
+	for key, w := range want {
+		spec, ok := got[key]
+		if !ok {
+			t.Errorf("SFID %s (%s): in contract, missing from registry", key, w.name)
+			continue
+		}
+		if spec.name != w.name {
+			t.Errorf("SFID %s: registry name %q, contract %q", key, spec.name, w.name)
+		}
+		if spec.kind != w.kind {
+			t.Errorf("SFID %s (%s): registry kind %d, contract kind %d", key, w.name, spec.kind, w.kind)
+		}
+	}
+	for key, spec := range got {
+		if _, ok := want[key]; !ok {
+			t.Errorf("SFID %s (%s): in registry but not in the contract map", key, spec.name)
+		}
 	}
 }
 
