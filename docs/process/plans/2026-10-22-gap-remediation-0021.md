@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Remediate, in the go-afp-line library, the mechanical gaps DAP Decision 0021 recorded against v0.1.0-beta.1 — 10 unregistered SFIDs aborting `DecodeField`, 7 of them additionally aborting `Reduce`, and the bare-EDT length strictness — so the owner-approved 0020 profile file decodes and reduces without abort. This is library improvement work; it is **not** the DAP adoption decision.
+**Goal:** Remediate, in the go-afp-line library, the mechanical gaps DAP Decision 0021 recorded against v0.1.0-beta.1 — 10 unregistered SFIDs aborting `DecodeField`, 6 of them additionally aborting `Reduce`, and the bare-EDT length strictness — so the owner-approved 0020 profile file decodes and reduces without abort. This is library improvement work; it is **not** the DAP adoption decision.
 
-**Architecture:** Table-driven registry extension in `afp/field.go` (10 new rows reusing the existing `kindContracted`/`kindExcluded` → `*RawField` passthrough), accept-and-note cases for the 7 contracted SFIDs in `afptoline/reduce.go`'s `visitRaw` (the abort lives there, not just in the registry), and a BPG-style presence flag for the introducer-only EDT form so byte-identical re-encoding is preserved. No new dependencies, no API shape changes; the default contract (unknown SFID aborts) is preserved.
+**Architecture:** Table-driven registry extension in `afp/field.go` (10 new rows reusing the existing `kindContracted`/`kindExcluded` → `*RawField` passthrough), accept-and-note cases for the 6 contracted SFIDs in `afptoline/reduce.go`'s `visitRaw` (the abort lives there, not just in the registry), and a BPG-style presence flag for the introducer-only EDT form so byte-identical re-encoding is preserved. No new dependencies, no API shape changes; the default contract (unknown SFID aborts) is preserved.
 
 **Tech Stack:** Go 1.27, stdlib only.
 
@@ -37,7 +37,7 @@ Decision 0021 reserves the remediation path as an owner/product call: "(a) a reg
 
 1. A field carrying one of the 10 new SFIDs but with malformed framing (length mismatch) → must still be a typed `DecodeError`, never silently passed through. (Framing validation in `DecodeField` precedes registry dispatch — passthrough must not weaken it.)
 2. Bare 8-byte EDT → accepted **and** re-encodes to the identical 8 bytes; EDT with 1–9 data bytes → still `DecodeError` KindStructure; BDT with 0 data bytes → still rejected. (Only EDT is relaxed; byte-identity is non-negotiable.)
-3. The 3 excluded types surface as `line.Exclusion` diagnostics through `Reduce`; the 7 contracted types reduce with zero exclusions and zero aborts.
+3. The 4 excluded types (BOC/EOC/OCD/IOB) surface as `line.Exclusion` diagnostics through `Reduce`; the 6 contracted types reduce with zero exclusions and zero aborts.
 4. An SFID in neither the old nor the new registry (e.g. `D3FFFF`) → still aborts with the exact existing `unknown structured field type` error. (Default contract preserved while Task 5 is ungated.)
 5. `RoundTrip` byte-identity holds on a stream containing all 10 new SFIDs plus the bare EDT.
 
@@ -150,7 +150,7 @@ git add afp/field.go afp/field_test.go docs/subset-contract.md CHANGELOG.md
 git commit -m "feat(afp): register 7 structural SFIDs as contracted passthrough"
 ```
 
-## Task 3: Accept the 7 contracted SFIDs in `Reduce`
+## Task 3: Accept the 6 contracted SFIDs in `Reduce`
 
 **Files:**
 - Modify: `afptoline/reduce.go` (`visitRaw` — new accept cases)
@@ -158,8 +158,8 @@ git commit -m "feat(afp): register 7 structural SFIDs as contracted passthrough"
 - Modify: `CHANGELOG.md`
 
 **Interfaces:**
-- Consumes: `*afp.RawField` with the 7 new SFIDs from Task 2; `visitRaw`'s existing MCF/PTD note-and-continue template (`reduce.go` ~line 347)
-- Produces: `Reduce` accepts the 7 SFIDs without abort and without exclusions
+- Consumes: `*afp.RawField` with the 6 contracted SFIDs from Task 2 (IOB went excluded per the Task 2 caveat); `visitRaw`'s existing MCF/PTD note-and-continue template (`reduce.go` ~line 347)
+- Produces: `Reduce` accepts the 6 SFIDs without abort and without exclusions
 
 **Rationale:** `DecodeField` returning `*RawField{Excluded:false}` is not the end of the pipeline — `visitRaw`'s `default` branch fails with "contracted field without v1 reduction semantics". Registry-only changes cannot make `Reduce` succeed. This task was missing from the v1 draft entirely.
 
@@ -169,8 +169,8 @@ git commit -m "feat(afp): register 7 structural SFIDs as contracted passthrough"
 ```go
 func TestReduce_ProfileCensusOrder(t *testing.T) {
     // stream in the Step-1 census order →
-    // Reduce → err == nil; exclusions recorded exactly for BOC/EOC/OCD;
-    // zero exclusions and zero aborts for the 7 contracted SFIDs.
+    // Reduce → err == nil; exclusions recorded exactly for BOC/EOC/OCD/IOB;
+    // zero exclusions and zero aborts for the 6 contracted SFIDs.
 }
 ```
 
@@ -183,7 +183,8 @@ Expected: FAIL — `afp: decode error at offset 0 [validation] (field D3A8A5): c
   - `D3A8A5` (BPF): accept when `!st.inDoc` — the print file opens before the document (field 0 precedes BDT); note-and-continue.
   - `D3A9A5` (EPF): accept when `!st.inDoc` — after EDT closed the document; note-and-continue.
   - `D3A8CE`/`D3A9CE` (BRS/ERS): accept when `!st.inDoc` — the census places them at fields 2 and 6, print-file level before BDT (field 8); note-and-continue.
-  - `D3A6AF` (PGD), `D3ABC3` (MDR), `D3AFC3` (IOB): accept when `st.inDoc` — the census places them at fields 11, 12, 18, inside the document — mirroring the MCF/PTD "environment field outside document" guard; note-and-continue. (If the Step 1 census dump disagrees with these positions, follow the dump and document why in the code comment.)
+  - `D3A6AF` (PGD), `D3ABC3` (MDR): accept when `st.inDoc` — the census places them at fields 11 and 12, inside the document — mirroring the MCF/PTD "environment field outside document" guard; note-and-continue. (If the Step 1 census dump disagrees with these positions, follow the dump and document why in the code comment.)
+  - IOB (`D3AFC3`) is excluded, not contracted — it flows through `visitRaw`'s existing `t.Excluded` branch automatically; no accept case needed.
   - No new group tracking in v1: pairing validation for print-file/resource wrappers is a design decision beyond this fix; note-and-continue only.
 
 - [ ] **Step 5: Run to verify it passes**
@@ -193,7 +194,7 @@ Expected: PASS.
 
 - [ ] **Step 6: CHANGELOG + commit**
 
-`### Fixed` under `[Unreleased]`: "`Reduce` accepts the 7 newly contracted structural SFIDs (note-and-continue; no v1 content semantics) instead of aborting."
+`### Fixed` under `[Unreleased]`: "`Reduce` accepts the 6 newly contracted structural SFIDs (note-and-continue; no v1 content semantics) instead of aborting."
 
 ```bash
 git add afptoline/reduce.go afptoline/reduce_test.go CHANGELOG.md
@@ -270,15 +271,15 @@ git commit -m "fix(afp): accept introducer-only EDT with byte-identical re-encod
 - After Task 4: full `go test ./...`, `go vet ./...`, `gofmt -l .` empty — the repo's pre-PR gate.
 - Real-file acceptance (runnable locally — no longer an external dependency): the hash-verified `/home/hatch/workspace/afp-samples/health/01_Health_Coverage.afp` (read-only; never commit it):
   - `SplitFields` → 25 fields, no error; `DecodeField` each → no aborts;
-  - `Reduce` → completes; exclusions recorded exactly for the excluded set {BRG, ERG, BOC, EOC, OCD} (BRG/ERG are pre-existing excluded entries at fields 1 and 7);
+  - `Reduce` → completes; exclusions recorded exactly for the excluded set {BRG, ERG, BOC, EOC, OCD, IOB} (BRG/ERG are pre-existing excluded entries at fields 1 and 7);
   - `RoundTrip` → byte-identical (this is what caught the v1 draft's Task 3 defect — it stays in the gate).
 - Fidelity non-claim: none of the above is fidelity evidence per 0021 §(i). The completion report states the mechanical result only.
 
 ## Acceptance Criteria
 
 - [ ] AC1: `gofmt` clean, `go vet ./...` clean, `go test ./...` green; CI (build, fuzz-smoke, govulncheck) green at the exact PR head.
-- [ ] AC2: All 10 SFIDs decode without abort — BOC/EOC/OCD with `Excluded=true`, the other 7 with `Excluded=false`; registry↔contract parity test green.
-- [ ] AC3: `Reduce` completes on the census-order stream and on the real profile file. Synthetic stream → exclusions recorded exactly for BOC/EOC/OCD. Real file → exclusions recorded exactly for the full excluded set {BRG, ERG, BOC, EOC, OCD} (BRG/ERG are pre-existing `kindExcluded` entries at fields 1 and 7). Zero aborts in both.
+- [ ] AC2: All 10 SFIDs decode without abort — BOC/EOC/OCD/IOB with `Excluded=true`, the other 6 with `Excluded=false`; registry↔contract parity test green.
+- [ ] AC3: `Reduce` completes on the census-order stream and on the real profile file. Synthetic stream → exclusions recorded exactly for BOC/EOC/OCD/IOB. Real file → exclusions recorded exactly for the full excluded set {BRG, ERG, BOC, EOC, OCD, IOB} (BRG/ERG are pre-existing `kindExcluded` entries at fields 1 and 7). Zero aborts in both.
 - [ ] AC4: `RoundTrip` byte-identical on the real profile file, including the bare EDT.
 - [ ] AC5: Bare 8-byte EDT decodes and re-encodes byte-identically; EDT with 1–9 data bytes still errors; BDT strictness unchanged.
 - [ ] AC6: An SFID in neither registry (e.g. `D3FFFF`) still aborts with the exact existing error — default contract preserved.
