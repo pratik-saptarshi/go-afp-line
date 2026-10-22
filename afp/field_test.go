@@ -2,6 +2,7 @@ package afp
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 )
 
@@ -23,6 +24,16 @@ var (
 		0xC8, 0xC5, 0xD3, 0xD3, 0xD6, 0xE6, 0xD3, 0xC4, // "HELLOWLD"
 		0x00, 0x00,
 	}
+	// EDT with no DocName: introducer only, SFLength=8 (0020 profile file).
+	edtNoName = []byte{0x00, 0x08, 0xD3, 0xA9, 0xA8, 0x00, 0x00, 0x00}
+	// BDT with no DocName: introducer only, SFLength=8 — still rejected
+	// (BDT strictness unchanged).
+	bdtNoName = []byte{0x00, 0x08, 0xD3, 0xA8, 0xA8, 0x00, 0x00, 0x00}
+	// EDT claiming 12 bytes but carrying only 4 data bytes: truncated data.
+	edtTruncatedData = []byte{
+		0x00, 0x0C, 0xD3, 0xA9, 0xA8, 0x00, 0x00, 0x00,
+		0xC8, 0xC5, 0xD3, 0xD3,
+	}
 	// BPG, SFLength=16: introducer + PageName(8).
 	bpgPage = []byte{
 		0x00, 0x10, 0xD3, 0xA8, 0xAF, 0x00, 0x00, 0x00,
@@ -39,14 +50,114 @@ var (
 	unknownField = []byte{0x00, 0x08, 0xD3, 0xFF, 0xFF, 0x00, 0x00, 0x00}
 	// BGR (Begin Graphics, D3A8BB): known-excluded per the subset contract.
 	bgrExcluded = []byte{0x00, 0x08, 0xD3, 0xA8, 0xBB, 0x00, 0x00, 0x00}
+	// BOC (Begin Object Container, D3A892), EOC (D3A992), OCD (Object
+	// Container Data, D3EE92): known-excluded per the contract §9 closed
+	// exclusion list.
+	bocExcluded = []byte{0x00, 0x08, 0xD3, 0xA8, 0x92, 0x00, 0x00, 0x00}
+	eocExcluded = []byte{0x00, 0x08, 0xD3, 0xA9, 0x92, 0x00, 0x00, 0x00}
+	ocdExcluded = []byte{0x00, 0x08, 0xD3, 0xEE, 0x92, 0x00, 0x00, 0x00}
 	// PTX (D3EE9B): contracted in-subset, typed decoder arrives in Task 6.
 	ptxContracted = []byte{0x00, 0x08, 0xD3, 0xEE, 0x9B, 0x00, 0x00, 0x00}
+	// Structural envelope/resource/page-map fields (DAP-0021 Task 2):
+	// BPF/EPF (Begin/End Print File), BRS/ERS (Begin/End Resource),
+	// PGD (Page Descriptor), MDR (Map Data Resource) — contracted
+	// in-subset per the contract §3; typed decoders arrive in later tasks.
+	bpfContracted = []byte{0x00, 0x08, 0xD3, 0xA8, 0xA5, 0x00, 0x00, 0x00}
+	epfContracted = []byte{0x00, 0x08, 0xD3, 0xA9, 0xA5, 0x00, 0x00, 0x00}
+	brsContracted = []byte{0x00, 0x08, 0xD3, 0xA8, 0xCE, 0x00, 0x00, 0x00}
+	ersContracted = []byte{0x00, 0x08, 0xD3, 0xA9, 0xCE, 0x00, 0x00, 0x00}
+	pgdContracted = []byte{0x00, 0x08, 0xD3, 0xA6, 0xAF, 0x00, 0x00, 0x00}
+	mdrContracted = []byte{0x00, 0x08, 0xD3, 0xAB, 0xC3, 0x00, 0x00, 0x00}
+	// IOB (Include Object, D3AFC3): known-excluded per the DAP-0021 Task 2
+	// caveat — the profile file's IOB includes an object container whose
+	// OCD payload is JPEG image data (content-bearing, excluded class).
+	iobExcluded = []byte{0x00, 0x08, 0xD3, 0xAF, 0xC3, 0x00, 0x00, 0x00}
 	// BDT claiming 12 bytes but carrying only 4 data bytes: truncated data.
 	bdtTruncatedData = []byte{
 		0x00, 0x0C, 0xD3, 0xA8, 0xA8, 0x00, 0x00, 0x00,
 		0xC8, 0xC5, 0xD3, 0xD3,
 	}
+	// BOC (newly-registered excluded type) claiming SFLength=16 but carrying
+	// only 12 bytes total: framing must still fail with KindStructure.
+	bocLengthMismatch = []byte{
+		0x00, 0x10, 0xD3, 0xA8, 0x92, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+	}
+	// BPF (newly-registered contracted type) claiming SFLength=16 but
+	// carrying only 12 bytes total: framing must still fail with
+	// KindStructure, never silent passthrough.
+	bpfLengthMismatch = []byte{
+		0x00, 0x10, 0xD3, 0xA8, 0xA5, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+	}
+	// Unknown type D3FFFF claiming SFLength=16 but carrying only 12 bytes
+	// total: framing must fail with KindStructure even in lenient mode —
+	// leniency never weakens framing validation.
+	unknownLengthMismatch = []byte{
+		0x00, 0x10, 0xD3, 0xFF, 0xFF, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+	}
 )
+
+func TestDecodeField_BareEDT(t *testing.T) {
+	// 1. bare EDT (8-byte introducer, zero data) → *EDT, BareForm == true.
+	f, err := DecodeField(edtNoName)
+	if err != nil {
+		t.Fatalf("DecodeField(EDT, no name) error: %v", err)
+	}
+	edt, ok := f.(*EDT)
+	if !ok {
+		t.Fatalf("type = %T, want *EDT", f)
+	}
+	if !edt.BareForm {
+		t.Errorf("BareForm = false, want true: no name was on the wire")
+	}
+	// 2. Encode() of that value → byte-identical to the 8-byte input.
+	if got := f.Encode(); !bytes.Equal(got, edtNoName) {
+		t.Errorf("Encode() = %X, want %X", got, edtNoName)
+	}
+	// 3. EDT with 4 data bytes → DecodeError KindStructure (not a panic).
+	_, err = DecodeField(edtTruncatedData)
+	derr, ok := err.(DecodeError)
+	if !ok {
+		t.Fatalf("DecodeField(EDT, 4 data bytes) error = %T (%v), want DecodeError", err, err)
+	}
+	if derr.Kind != KindStructure {
+		t.Errorf("Kind = %q, want KindStructure", derr.Kind)
+	}
+	// 4. bare BDT (zero data) → DecodeError KindStructure (BDT strictness
+	// unchanged).
+	_, err = DecodeField(bdtNoName)
+	derr, ok = err.(DecodeError)
+	if !ok {
+		t.Fatalf("DecodeField(BDT, no name) error = %T (%v), want DecodeError", err, err)
+	}
+	if derr.Kind != KindStructure {
+		t.Errorf("Kind = %q, want KindStructure", derr.Kind)
+	}
+	// 5. EDT with 10 data bytes → *EDT with BareForm == false, as before.
+	f, err = DecodeField(edtHello)
+	if err != nil {
+		t.Fatalf("DecodeField(EDT) error: %v", err)
+	}
+	edt, ok = f.(*EDT)
+	if !ok {
+		t.Fatalf("type = %T, want *EDT", f)
+	}
+	if edt.BareForm {
+		t.Errorf("BareForm = true, want false: the 8-byte name was on the wire")
+	}
+	// 6. Legacy direct construction (&EDT{DocName: "REPORT"}) must keep
+	// encoding the name: the zero value preserves pre-flag behavior.
+	legacy := &EDT{DocName: "REPORT"}
+	enc := legacy.Encode()
+	if len(enc) != 18 {
+		t.Fatalf("legacy &EDT{DocName} Encode() len = %d, want 18 (name must not be silently dropped)", len(enc))
+	}
+	if got := decodeCHAR(enc[8:16]); got != "REPORT" {
+		t.Errorf("legacy &EDT{DocName} round-trip DocName = %q, want %q", got, "REPORT")
+	}
+}
 
 func TestDecodeField_BDT(t *testing.T) {
 	f, err := DecodeField(bdtHello)
@@ -170,6 +281,388 @@ func TestDecodeField_ExcludedGOCA(t *testing.T) {
 	}
 }
 
+func TestDecodeField_ObjectContainerExcluded(t *testing.T) {
+	vectors := []struct {
+		name   string
+		raw    []byte
+		typeID string
+	}{
+		{"BOC", bocExcluded, "D3A892"},
+		{"EOC", eocExcluded, "D3A992"},
+		{"OCD", ocdExcluded, "D3EE92"},
+		// IOB is excluded per the DAP-0021 Task 2 caveat: the profile
+		// file's IOB includes an object container whose OCD payload is
+		// JPEG image data (content-bearing, excluded class).
+		{"IOB", iobExcluded, "D3AFC3"},
+	}
+	for _, v := range vectors {
+		f, err := DecodeField(v.raw)
+		if err != nil {
+			t.Errorf("DecodeField(%s) error: %v (excluded fields must not error)", v.name, err)
+			continue
+		}
+		raw, ok := f.(*RawField)
+		if !ok {
+			t.Errorf("DecodeField(%s) type = %T, want *RawField", v.name, f)
+			continue
+		}
+		if !raw.Excluded {
+			t.Errorf("DecodeField(%s): RawField.Excluded = false, want true", v.name)
+		}
+		if f.TypeID() != v.typeID {
+			t.Errorf("DecodeField(%s): TypeID() = %q, want %q", v.name, f.TypeID(), v.typeID)
+		}
+		if !bytes.Equal(raw.Encode(), v.raw) {
+			t.Errorf("DecodeField(%s): Encode() = %X, want input bytes %X", v.name, raw.Encode(), v.raw)
+		}
+	}
+}
+
+// TestDecodeField_StructuralContracted pins the DAP-0021 Task 2
+// registrations: the structural envelope/resource/page-map fields decode as
+// *RawField with Excluded=false (contracted in-subset; typed decoders arrive
+// in later tasks), never an error.
+func TestDecodeField_StructuralContracted(t *testing.T) {
+	vectors := []struct {
+		name   string
+		raw    []byte
+		typeID string
+	}{
+		{"BPF", bpfContracted, "D3A8A5"},
+		{"EPF", epfContracted, "D3A9A5"},
+		{"BRS", brsContracted, "D3A8CE"},
+		{"ERS", ersContracted, "D3A9CE"},
+		{"PGD", pgdContracted, "D3A6AF"},
+		{"MDR", mdrContracted, "D3ABC3"},
+	}
+	for _, v := range vectors {
+		f, err := DecodeField(v.raw)
+		if err != nil {
+			t.Errorf("DecodeField(%s) error: %v (contracted fields must not error)", v.name, err)
+			continue
+		}
+		raw, ok := f.(*RawField)
+		if !ok {
+			t.Errorf("DecodeField(%s) type = %T, want *RawField", v.name, f)
+			continue
+		}
+		if raw.Excluded {
+			t.Errorf("DecodeField(%s): RawField.Excluded = true, want false: contracted, not excluded", v.name)
+		}
+		if f.TypeID() != v.typeID {
+			t.Errorf("DecodeField(%s): TypeID() = %q, want %q", v.name, f.TypeID(), v.typeID)
+		}
+		if !bytes.Equal(raw.Encode(), v.raw) {
+			t.Errorf("DecodeField(%s): Encode() = %X, want input bytes %X", v.name, raw.Encode(), v.raw)
+		}
+	}
+}
+
+// TestDecodeField_ContractedMalformedFraming pins that a contracted type
+// with a framing violation fails with KindStructure before the registry is
+// consulted: 12 bytes on the wire against a claimed SFLength of 16.
+func TestDecodeField_ContractedMalformedFraming(t *testing.T) {
+	_, err := DecodeField(bpfLengthMismatch)
+	derr, ok := err.(DecodeError)
+	if !ok {
+		t.Fatalf("DecodeField(length-mismatched BPF) error = %T (%v), want DecodeError", err, err)
+	}
+	if derr.Kind != KindStructure {
+		t.Errorf("DecodeError.Kind = %v, want KindStructure", derr.Kind)
+	}
+	if want := "field byte count 12 does not match SFLength 16"; derr.Reason != want {
+		t.Errorf("DecodeError.Reason = %q, want %q", derr.Reason, want)
+	}
+	if derr.FieldID != "D3A8A5" {
+		t.Errorf("DecodeError.FieldID = %q, want %q", derr.FieldID, "D3A8A5")
+	}
+}
+
+func TestDecodeField_UnknownStillAborts(t *testing.T) {
+	_, err := DecodeField(unknownField)
+	derr, ok := err.(DecodeError)
+	if !ok {
+		t.Fatalf("DecodeField(D3FFFF) error = %T (%v), want DecodeError", err, err)
+	}
+	if derr.Kind != KindValidation {
+		t.Errorf("DecodeError.Kind = %v, want KindValidation", derr.Kind)
+	}
+	if want := "unknown structured field type: aborting (not in contracted subset)"; derr.Reason != want {
+		t.Errorf("DecodeError.Reason = %q, want %q", derr.Reason, want)
+	}
+	if derr.FieldID != "D3FFFF" {
+		t.Errorf("DecodeError.FieldID = %q, want %q", derr.FieldID, "D3FFFF")
+	}
+}
+
+func TestDecodeField_NewTypeMalformedFraming(t *testing.T) {
+	// BOC is now a registered excluded type, but framing violations must
+	// still fail before the registry is consulted: 12 bytes on the wire
+	// against a claimed SFLength of 16.
+	_, err := DecodeField(bocLengthMismatch)
+	derr, ok := err.(DecodeError)
+	if !ok {
+		t.Fatalf("DecodeField(length-mismatched BOC) error = %T (%v), want DecodeError", err, err)
+	}
+	if derr.Kind != KindStructure {
+		t.Errorf("DecodeError.Kind = %v, want KindStructure", derr.Kind)
+	}
+	if want := "field byte count 12 does not match SFLength 16"; derr.Reason != want {
+		t.Errorf("DecodeError.Reason = %q, want %q", derr.Reason, want)
+	}
+	if derr.FieldID != "D3A892" {
+		t.Errorf("DecodeError.FieldID = %q, want %q", derr.FieldID, "D3A892")
+	}
+}
+
+// TestDecodeFieldLenient_UnknownTypePassthrough pins the Task 5 opt-in
+// contract: an unregistered SFID decodes as an excluded *RawField under
+// DecodeFieldLenient, while the SAME input still aborts with the exact
+// KindValidation error under DecodeField (the fail-fast default is
+// deliberate and unchanged).
+func TestDecodeFieldLenient_UnknownTypePassthrough(t *testing.T) {
+	f, err := DecodeFieldLenient(unknownField)
+	if err != nil {
+		t.Fatalf("DecodeFieldLenient(D3FFFF) error: %v (unknown types must passthrough, not error)", err)
+	}
+	raw, ok := f.(*RawField)
+	if !ok {
+		t.Fatalf("DecodeFieldLenient(D3FFFF) type = %T, want *RawField", f)
+	}
+	if !raw.Excluded {
+		t.Errorf("RawField.Excluded = false, want true: unregistered types are out-of-subset")
+	}
+	if f.TypeID() != "D3FFFF" {
+		t.Errorf("TypeID() = %q, want %q", f.TypeID(), "D3FFFF")
+	}
+	if !bytes.Equal(raw.Encode(), unknownField) {
+		t.Errorf("Encode() = %X, want input bytes %X", raw.Encode(), unknownField)
+	}
+	// The strict default must be byte-for-byte the existing abort.
+	_, err = DecodeField(unknownField)
+	derr, ok := err.(DecodeError)
+	if !ok {
+		t.Fatalf("DecodeField(D3FFFF) error = %T (%v), want DecodeError", err, err)
+	}
+	if derr.Kind != KindValidation {
+		t.Errorf("DecodeError.Kind = %v, want KindValidation", derr.Kind)
+	}
+	if want := "unknown structured field type: aborting (not in contracted subset)"; derr.Reason != want {
+		t.Errorf("DecodeError.Reason = %q, want %q", derr.Reason, want)
+	}
+	if derr.FieldID != "D3FFFF" {
+		t.Errorf("DecodeError.FieldID = %q, want %q", derr.FieldID, "D3FFFF")
+	}
+}
+
+// TestDecodeFieldLenient_MalformedFramingStillErrors pins that framing
+// violations abort with KindStructure in BOTH modes: leniency only touches
+// the unknown-type lookup, never the SFLength/structural validation.
+func TestDecodeFieldLenient_MalformedFramingStillErrors(t *testing.T) {
+	for _, decode := range []struct {
+		name string
+		fn   func([]byte) (Field, error)
+	}{
+		{"strict", DecodeField},
+		{"lenient", DecodeFieldLenient},
+	} {
+		_, err := decode.fn(unknownLengthMismatch)
+		derr, ok := err.(DecodeError)
+		if !ok {
+			t.Fatalf("%s(D3FFFF, length-mismatched) error = %T (%v), want DecodeError", decode.name, err, err)
+		}
+		if derr.Kind != KindStructure {
+			t.Errorf("%s: DecodeError.Kind = %v, want KindStructure", decode.name, derr.Kind)
+		}
+		if want := "field byte count 12 does not match SFLength 16"; derr.Reason != want {
+			t.Errorf("%s: DecodeError.Reason = %q, want %q", decode.name, derr.Reason, want)
+		}
+		if derr.FieldID != "D3FFFF" {
+			t.Errorf("%s: DecodeError.FieldID = %q, want %q", decode.name, derr.FieldID, "D3FFFF")
+		}
+	}
+}
+
+// TestDecodeFieldLenient_RegisteredTypesIdentical pins that registered types
+// decode identically in both modes: typed (BDT), contracted (BPF), excluded
+// (BGR) — the fork is unreachable for them, so mode must not matter.
+func TestDecodeFieldLenient_RegisteredTypesIdentical(t *testing.T) {
+	vectors := []struct {
+		name string
+		raw  []byte
+		want interface{}
+	}{
+		{"BDT", bdtHello, &BDT{}},
+		{"BPF", bpfContracted, &RawField{}},
+		{"BGR", bgrExcluded, &RawField{}},
+	}
+	for _, v := range vectors {
+		sf, err := DecodeField(v.raw)
+		if err != nil {
+			t.Fatalf("DecodeField(%s) error: %v", v.name, err)
+		}
+		lf, err := DecodeFieldLenient(v.raw)
+		if err != nil {
+			t.Fatalf("DecodeFieldLenient(%s) error: %v", v.name, err)
+		}
+		if fmt.Sprintf("%T", sf) != fmt.Sprintf("%T", v.want) || fmt.Sprintf("%T", lf) != fmt.Sprintf("%T", v.want) {
+			t.Errorf("%s: strict type = %T, lenient type = %T, want %T", v.name, sf, lf, v.want)
+		}
+		if sraw, ok := sf.(*RawField); ok {
+			lraw := lf.(*RawField)
+			if sraw.Excluded != lraw.Excluded {
+				t.Errorf("%s: strict Excluded = %v, lenient Excluded = %v, must match",
+					v.name, sraw.Excluded, lraw.Excluded)
+			}
+		}
+		if !bytes.Equal(sf.Encode(), lf.Encode()) || !bytes.Equal(sf.Encode(), v.raw) {
+			t.Errorf("%s: strict/lenient Encode() differ or diverge from input: strict=%X lenient=%X input=%X",
+				v.name, sf.Encode(), lf.Encode(), v.raw)
+		}
+	}
+}
+
+// TestRegistryMatchesContract is a tripwire against code/contract drift:
+// the registry's full SFID->(name, kind) set must equal this hardcoded map,
+// which mirrors docs/subset-contract.md §3 (in-scope) and §9 (closed
+// exclusion list). The reviewer checks the map against the contract.
+func TestRegistryMatchesContract(t *testing.T) {
+	want := map[string]struct {
+		name string
+		kind fieldKind
+	}{
+		// Typed in this task (contract §3).
+		"D3A8A8": {"BDT", kindTyped},
+		"D3A9A8": {"EDT", kindTyped},
+		"D3A8AF": {"BPG", kindTyped},
+		"D3A9AF": {"EPG", kindTyped},
+		// Contracted in-subset; typed decoders arrive in later tasks (§3).
+		"D3A8AD": {"BNG", kindContracted},
+		"D3A9AD": {"ENG", kindContracted},
+		"D3A8C9": {"BAG", kindContracted},
+		"D3A9C9": {"EAG", kindContracted},
+		"D3A89B": {"BPT", kindContracted},
+		"D3A99B": {"EPT", kindContracted},
+		"D3EE9B": {"PTX", kindContracted},
+		"D3AB8A": {"MCF", kindContracted},
+		"D3B19B": {"PTD", kindContracted},
+		// Structural envelope/resource/page-map fields (contract §3,
+		// DAP-0021 Task 2; IBM MODCA-Reference-09 primary).
+		"D3A8A5": {"BPF", kindContracted},
+		"D3A9A5": {"EPF", kindContracted},
+		"D3A8CE": {"BRS", kindContracted},
+		"D3A9CE": {"ERS", kindContracted},
+		"D3A6AF": {"PGD", kindContracted},
+		"D3ABC3": {"MDR", kindContracted},
+		// Known-excluded per the contract §9 closed exclusion list.
+		// IOCA (excluded)
+		"D3A8FB": {"BIM", kindExcluded},
+		"D3A9FB": {"EIM", kindExcluded},
+		"D3EEFB": {"IPD", kindExcluded},
+		"D3A6FB": {"IDD", kindExcluded},
+		"D3A67B": {"IID", kindExcluded},
+		"D3A77B": {"IOC", kindExcluded},
+		"D3AC7B": {"ICP", kindExcluded},
+		"D3EE7B": {"IRD", kindExcluded},
+		// GOCA (excluded)
+		"D3A8BB": {"BGR", kindExcluded},
+		"D3A9BB": {"EGR", kindExcluded},
+		"D3EEBB": {"GAD", kindExcluded},
+		"D3A6BB": {"GDD", kindExcluded},
+		// BCOCA (excluded)
+		"D3A8EB": {"BBC", kindExcluded},
+		"D3A9EB": {"EBC", kindExcluded},
+		"D3EEEB": {"BDA", kindExcluded},
+		"D3A6EB": {"BDD", kindExcluded},
+		"D3ABEB": {"MBC", kindExcluded},
+		// FOCA (excluded)
+		"D3A88A": {"BCF", kindExcluded},
+		"D3A98A": {"ECF", kindExcluded},
+		"D3A889": {"BFN", kindExcluded},
+		"D3A989": {"EFN", kindExcluded},
+		"D3A887": {"BCP", kindExcluded},
+		"D3A987": {"ECP", kindExcluded},
+		"D3A78A": {"CFC", kindExcluded},
+		"D38C8A": {"CFI", kindExcluded},
+		"D3A787": {"CPC", kindExcluded},
+		"D3A687": {"CPD", kindExcluded},
+		"D38C87": {"CPI", kindExcluded},
+		"D3A789": {"FNC", kindExcluded},
+		"D3A689": {"FND", kindExcluded},
+		"D3EE89": {"FNG", kindExcluded},
+		"D38C89": {"FNI", kindExcluded},
+		"D3A289": {"FNM", kindExcluded},
+		"D3AB89": {"FNN", kindExcluded},
+		"D3AE89": {"FNO", kindExcluded},
+		"D3AC89": {"FNP", kindExcluded},
+		"D3B18A": {"MCF1", kindExcluded},
+		// CMOCA / color (excluded)
+		"D3A877": {"BCA", kindExcluded},
+		"D3A977": {"ECA", kindExcluded},
+		"D3AB77": {"MCA", kindExcluded},
+		"D3B077": {"CAT", kindExcluded},
+		// Overlays / medium (excluded)
+		"D3A8DF": {"BMO", kindExcluded},
+		"D3A9DF": {"EMO", kindExcluded},
+		"D3A8CC": {"BMM", kindExcluded},
+		"D3A9CC": {"EMM", kindExcluded},
+		"D3B1DF": {"MMO", kindExcluded},
+		"D3ABD8": {"MPO", kindExcluded},
+		"D3ABCC": {"IMM", kindExcluded},
+		"D3A288": {"MCC", kindExcluded},
+		"D3A688": {"MDD", kindExcluded},
+		"D3A788": {"MMC", kindExcluded},
+		"D3A8C6": {"BRG", kindExcluded},
+		"D3A9C6": {"ERG", kindExcluded},
+		"D3A8D9": {"BSG", kindExcluded},
+		"D3A9D9": {"ESG", kindExcluded},
+		"D3A8C4": {"BDG", kindExcluded},
+		"D3A9C4": {"EDG", kindExcluded},
+		"D3A8C7": {"BOG", kindExcluded},
+		"D3A9C7": {"EOG", kindExcluded},
+		// Misc skip (excluded, surfaced as diagnostics, never silent)
+		"D3EEEE": {"NOP", kindExcluded},
+		"D3A090": {"TLE", kindExcluded},
+		"D3AF5F": {"IPS", kindExcluded},
+		"D3B15F": {"MPS", kindExcluded},
+		// Object containers (contract §9 — excluded)
+		"D3A892": {"BOC", kindExcluded},
+		"D3A992": {"EOC", kindExcluded},
+		"D3EE92": {"OCD", kindExcluded},
+		// IOB: excluded per the DAP-0021 Task 2 caveat (profile file's
+		// IOB includes an object container whose OCD payload is JPEG
+		// image data), not contracted.
+		"D3AFC3": {"IOB", kindExcluded},
+	}
+
+	got := make(map[string]fieldSpec, len(fieldRegistry))
+	for id, spec := range fieldRegistry {
+		key := fmt.Sprintf("%02X%02X%02X", id[0], id[1], id[2])
+		got[key] = spec
+	}
+	if len(got) != len(want) {
+		t.Errorf("registry has %d entries, contract map has %d", len(got), len(want))
+	}
+	for key, w := range want {
+		spec, ok := got[key]
+		if !ok {
+			t.Errorf("SFID %s (%s): in contract, missing from registry", key, w.name)
+			continue
+		}
+		if spec.name != w.name {
+			t.Errorf("SFID %s: registry name %q, contract %q", key, spec.name, w.name)
+		}
+		if spec.kind != w.kind {
+			t.Errorf("SFID %s (%s): registry kind %d, contract kind %d", key, w.name, spec.kind, w.kind)
+		}
+	}
+	for key, spec := range got {
+		if _, ok := want[key]; !ok {
+			t.Errorf("SFID %s (%s): in registry but not in the contract map", key, spec.name)
+		}
+	}
+}
+
 func TestDecodeField_ContractedUntyped(t *testing.T) {
 	f, err := DecodeField(ptxContracted)
 	if err != nil {
@@ -194,6 +687,8 @@ func TestField_RoundTrip(t *testing.T) {
 	vectors := [][]byte{
 		bdtHello, edtHello, bpgPage, epgPage, bpgNoName,
 		bgrExcluded, ptxContracted,
+		bpfContracted, epfContracted, brsContracted, ersContracted,
+		pgdContracted, mdrContracted, iobExcluded,
 	}
 	for i, v := range vectors {
 		f, err := DecodeField(v)

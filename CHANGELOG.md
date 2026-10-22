@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Registered 7 structural SFIDs (BPF/EPF, BRS/ERS, PGD, MDR, IOB) as contracted passthrough with IBM-primary source citations. IOB decodes as excluded rather than contracted per the profile-usage check: the profile file's IOB includes an object container whose OCD payload is JPEG image data.
+- Opt-in lenient decode mode: new `afp.DecodeFieldLenient` decodes an unregistered SFID as an excluded `*RawField` instead of aborting (preflight-style diagnostics); `DecodeField` keeps its fail-fast default and framing validation is unchanged in both modes (contract §9).
+
+### Fixed
+- Object-container fields BOC/EOC/OCD (contract §9) no longer abort the decode; they decode as excluded `RawField` passthrough.
+- `Reduce` accepts the 6 newly contracted structural SFIDs (BPF/EPF, BRS/ERS, PGD, MDR) with note-and-continue and census-derived position guards instead of aborting; no v1 content semantics. IOB stays excluded and flows through the existing exclusion path.
+- EDT accepts the introducer-only (8-byte) form and re-encodes it byte-identically via a `BareForm` presence flag (BPG precedent); 1–9 data bytes still rejected; BDT strictness unchanged. The zero value preserves legacy direct construction (`&EDT{DocName: ...}` still encodes the name).
+
 ## [0.1.0-beta.1] - 2026-10-21
 
 First beta release.

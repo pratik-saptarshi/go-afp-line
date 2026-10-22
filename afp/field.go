@@ -76,6 +76,10 @@ func (f *BDT) Encode() []byte {
 type EDT struct {
 	Intro    Introducer
 	DocName  string
+	BareForm bool // true when decoded from the introducer-only (8-byte) wire
+	// form; Encode then reproduces the bare form byte-identically.
+	// The zero value preserves legacy behavior: a programmatically
+	// constructed EDT (e.g. &EDT{DocName: "REPORT"}) encodes the name.
 	Reserved [2]byte
 	Triplets Triplets
 }
@@ -86,8 +90,10 @@ func (f *EDT) TypeID() string { return f.Intro.TypeIDString() }
 // Encode implements Field.
 func (f *EDT) Encode() []byte {
 	body := make([]byte, 0, 10)
-	body = append(body, encodeCHAR8(f.DocName)...)
-	body = append(body, f.Reserved[0], f.Reserved[1])
+	if !f.BareForm {
+		body = append(body, encodeCHAR8(f.DocName)...)
+		body = append(body, f.Reserved[0], f.Reserved[1])
+	}
 	body = append(body, f.Triplets.Encode()...)
 	return encodeField(f.Intro, body)
 }
@@ -139,9 +145,10 @@ func (f *EPG) Encode() []byte {
 // RawField is an opaque passthrough for a well-formed field that has no
 // typed decoder yet. Excluded is true when the field is known-excluded by
 // the subset contract (out-of-subset: IOCA, GOCA, BCOCA, FOCA, CMOCA,
-// overlays/medium); false when the field is contracted in-subset but its
-// typed decoder arrives in a later task (e.g. PTX in Task 6). The raw bytes
-// are always preserved so re-encoding stays byte-identical.
+// overlays/medium, object containers); false when the field is contracted
+// in-subset but its typed decoder arrives in a later task (e.g. PTX in
+// Task 6). The raw bytes are always preserved so re-encoding stays
+// byte-identical.
 type RawField struct {
 	Intro    Introducer
 	Data     []byte // field data after the introducer, verbatim
@@ -190,7 +197,7 @@ func buildRegistry() map[[3]byte]fieldSpec {
 	}
 	// Typed in this task (contract §3).
 	add([3]byte{0xD3, 0xA8, 0xA8}, "BDT", kindTyped, decodeDocField("BDT", newBDT))
-	add([3]byte{0xD3, 0xA9, 0xA8}, "EDT", kindTyped, decodeDocField("EDT", newEDT))
+	add([3]byte{0xD3, 0xA9, 0xA8}, "EDT", kindTyped, decodeEDTField)
 	add([3]byte{0xD3, 0xA8, 0xAF}, "BPG", kindTyped, decodePageField("BPG", newBPG))
 	add([3]byte{0xD3, 0xA9, 0xAF}, "EPG", kindTyped, decodePageField("EPG", newEPG))
 	// Contracted in-subset; typed decoders arrive in later tasks.
@@ -207,6 +214,21 @@ func buildRegistry() map[[3]byte]fieldSpec {
 		{[3]byte{0xD3, 0xEE, 0x9B}, "PTX"},
 		{[3]byte{0xD3, 0xAB, 0x8A}, "MCF"},
 		{[3]byte{0xD3, 0xB1, 0x9B}, "PTD"},
+		// Structural envelope/resource/page-map fields (contract §3),
+		// verified DAP-0021 Task 2 against the IBM MODCA-Reference-09
+		// primary source (one line per SFID):
+		//   D3A8A5 BPF — Begin Print File (IBM primary)
+		//   D3A9A5 EPF — End Print File (IBM primary)
+		//   D3A8CE BRS — Begin Resource (IBM primary; openafp/parse-afp say BR/ER)
+		//   D3A9CE ERS — End Resource (IBM primary; openafp/parse-afp say BR/ER)
+		//   D3A6AF PGD — Page Descriptor (IBM primary; corroborated openafp + parse-afp + afplib)
+		//   D3ABC3 MDR — Map Data Resource (IBM primary; corroborated openafp + parse-afp + afplib)
+		{[3]byte{0xD3, 0xA8, 0xA5}, "BPF"},
+		{[3]byte{0xD3, 0xA9, 0xA5}, "EPF"},
+		{[3]byte{0xD3, 0xA8, 0xCE}, "BRS"},
+		{[3]byte{0xD3, 0xA9, 0xCE}, "ERS"},
+		{[3]byte{0xD3, 0xA6, 0xAF}, "PGD"},
+		{[3]byte{0xD3, 0xAB, 0xC3}, "MDR"},
 	} {
 		reg[e.id] = fieldSpec{name: e.name, kind: kindContracted}
 	}
@@ -285,6 +307,17 @@ func buildRegistry() map[[3]byte]fieldSpec {
 		{[3]byte{0xD3, 0xA0, 0x90}, "TLE"},
 		{[3]byte{0xD3, 0xAF, 0x5F}, "IPS"},
 		{[3]byte{0xD3, 0xB1, 0x5F}, "MPS"},
+		// Object containers (contract §9 — excluded)
+		{[3]byte{0xD3, 0xA8, 0x92}, "BOC"},
+		{[3]byte{0xD3, 0xA9, 0x92}, "EOC"},
+		{[3]byte{0xD3, 0xEE, 0x92}, "OCD"},
+		// IOB (Include Object, D3AFC3): excluded, not contracted, per the
+		// DAP-0021 Task 2 caveat. IBM MODCA-Reference-09 names it
+		// "Include Object", but in the profile file the IOB includes
+		// object "I0000001" (ObjType X'92', Other object data) whose
+		// matching OCD payload is JPEG image data — content-bearing,
+		// excluded-class content — so it decodes as excluded.
+		{[3]byte{0xD3, 0xAF, 0xC3}, "IOB"},
 	} {
 		reg[e.id] = fieldSpec{name: e.name, kind: kindExcluded}
 	}
@@ -320,7 +353,28 @@ func Acronym(typeID string) (string, bool) {
 	return spec.name, true
 }
 
+// DecodeFieldLenient is the opt-in lenient variant of DecodeField, for
+// preflight-style diagnostics over files that may carry unregistered
+// structured fields. It is identical to DecodeField except for one fork:
+// an unregistered SFID returns an excluded *RawField (Excluded=true,
+// raw bytes preserved, nil error) instead of the KindValidation abort.
+// Malformed framing still errors in both modes; the default DecodeField
+// fail-fast contract is unchanged.
+func DecodeFieldLenient(b []byte) (Field, error) {
+	return decodeField(b, true)
+}
+
 func DecodeField(b []byte) (Field, error) {
+	return decodeField(b, false)
+}
+
+// decodeField is the shared post-framing dispatch used by both DecodeField
+// (strict, the deliberate fail-fast default) and DecodeFieldLenient
+// (opt-in). The only behavioral fork is the unregistered-SFID branch:
+// strict aborts with a KindValidation DecodeError; lenient returns the
+// field as an excluded *RawField. Framing validation and registry dispatch
+// are shared verbatim — leniency never weakens them.
+func decodeField(b []byte, lenient bool) (Field, error) {
 	in, err := decodeIntroducer(b)
 	if err != nil {
 		return nil, err
@@ -334,8 +388,12 @@ func DecodeField(b []byte) (Field, error) {
 				len(b), in.Length),
 		}
 	}
+	data := b[in.HeaderLength():]
 	spec, ok := fieldRegistry[in.TypeID]
 	if !ok {
+		if lenient {
+			return &RawField{Intro: in, Data: cloneBytes(data), Excluded: true}, nil
+		}
 		return nil, DecodeError{
 			FieldID: in.TypeIDString(),
 			Offset:  0,
@@ -343,7 +401,6 @@ func DecodeField(b []byte) (Field, error) {
 			Reason:  "unknown structured field type: aborting (not in contracted subset)",
 		}
 	}
-	data := b[in.HeaderLength():]
 	switch spec.kind {
 	case kindTyped:
 		return spec.decode(in, data)
@@ -405,6 +462,30 @@ func newBDT(in Introducer, name string, reserved [2]byte, triplets Triplets) Fie
 
 func newEDT(in Introducer, name string, reserved [2]byte, triplets Triplets) Field {
 	return &EDT{Intro: in, DocName: name, Reserved: reserved, Triplets: triplets}
+}
+
+// decodeEDTField decodes EDT (D3A9A8): DocName CHAR[8] (0-7) + reserved
+// (8-9) + triplets (10-n), with the DocName block optional (BPG precedent):
+// the 0020 profile file carries a bare 8-byte EDT (introducer only). The
+// < 10 floor applies to all non-empty data, so data[0:8] is never sliced
+// from a short buffer.
+func decodeEDTField(in Introducer, data []byte) (Field, error) {
+	switch {
+	case len(data) == 0:
+		// Introducer only: no triplet parsing on empty data, there is
+		// nothing to parse.
+		return &EDT{Intro: in, BareForm: true}, nil
+	case len(data) >= 10:
+		return decodeDocField("EDT", newEDT)(in, data)
+	default:
+		return nil, DecodeError{
+			FieldID: in.TypeIDString(),
+			Offset:  in.HeaderLength(),
+			Kind:    KindStructure,
+			Reason: fmt.Sprintf("EDT: need 0 or >=10 data bytes (DocName+reserved), have %d",
+				len(data)),
+		}
+	}
 }
 
 // decodePageField decodes BPG/EPG: PageName CHAR[8] (0-7, optional),

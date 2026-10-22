@@ -44,6 +44,12 @@ any fidelity claim is made):**
 | A89B | D3A89B | BPT — Begin Presentation Text Object | TBD |
 | A99B | D3A99B | EPT — End Presentation Text Object | TBD |
 | EE9B | D3EE9B | PTX — Presentation Text Data | TBD |
+| A8A5 | D3A8A5 | BPF — Begin Print File | IBM MODCA-Ref-09 |
+| A9A5 | D3A9A5 | EPF — End Print File | IBM MODCA-Ref-09 |
+| A8CE | D3A8CE | BRS — Begin Resource (IBM; openafp/parse-afp say BR/ER) | IBM MODCA-Ref-09 |
+| A9CE | D3A9CE | ERS — End Resource (IBM; openafp/parse-afp say BR/ER) | IBM MODCA-Ref-09 |
+| A6AF | D3A6AF | PGD — Page Descriptor | IBM MODCA-Ref-09 |
+| ABC3 | D3ABC3 | MDR — Map Data Resource | IBM MODCA-Ref-09 |
 
 Text-environment companions (needed to interpret PTX):
 
@@ -165,7 +171,23 @@ continues; malformed fields abort with a typed `DecodeError`. Nothing is silent.
   BSG/ESG, BDG/EDG, BOG/EOG (note: no field literally named "OEG" exists).
 - **FormDef / PageDef carriers:** per §7.
 - **Object containers:** BOC/EOC, OCD.
+- **Include Object (excluded):** IOB — the profile file's IOB includes object
+  "I0000001" (ObjType X'92', Other object data) whose matching OCD payload is
+  JPEG image data; content-bearing excluded-class content, so IOB decodes as
+  excluded rather than contracted (DAP-0021 Task 2 caveat).
 - **Misc skip:** NOP, TLE, IPS, MPS.
+
+### Opt-in lenient decode (generalization beyond the contracted subset)
+
+The fail-fast default is deliberate and unchanged: `DecodeField` aborts with a
+typed `DecodeError` (`KindValidation`) on an unregistered SFID. For
+preflight-style diagnostics over files that may carry unregistered fields,
+`afp.DecodeFieldLenient` is an opt-in alternative — identical to `DecodeField`
+except an unregistered SFID returns an excluded `*RawField` (`Excluded=true`,
+bytes preserved) instead of aborting. Malformed framing (introducer or
+`SFLength` mismatch) still errors with `KindStructure` in both modes:
+leniency never weakens framing validation. Contracted-subset guarantees
+(§3) are unchanged by either mode.
 
 ## 10. Framing contract
 

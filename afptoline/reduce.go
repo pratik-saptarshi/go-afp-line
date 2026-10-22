@@ -43,7 +43,8 @@ const DefaultMaxTextBytes = 1 << 20
 // and their runs placed in PDF user space (Y flipped via medium.go).
 //
 // Contracted-but-untyped structural fields (BNG/ENG, BAG/EAG, BPT/EPT) are
-// pairing-validated; their parameters are uninterpreted in v1. MCF/PTD are
+// pairing-validated; their parameters are uninterpreted in v1. MCF/PTD and
+// the print-file/resource envelope fields (BPF/EPF, BRS/ERS, PGD, MDR) are
 // accepted and noted (v1: parameters uninterpreted). Excluded fields become
 // line.Exclusion diagnostics via exclusionFor; truly unknown field types abort
 // per the decoder's abort-vs-diagnose policy.
@@ -345,6 +346,23 @@ func (st *reduceState) visitRaw(t *afp.RawField) error {
 		st.ptxSt = nil  // text object closed: discard the stream
 	case "D3AB8A", // MCF: v1 notes the mapping; fixtures carry none
 		"D3B19B": // PTD: v1 notes the descriptor; fixtures carry no AEG
+		if !st.inDoc {
+			return st.fail(id, afp.KindStructure, "environment field outside document")
+		}
+	case "D3A8A5", // BPF: v1 notes the print-file open; census field 0
+		// precedes BDT (field 8), so the document is not yet open
+		"D3A9A5", // EPF: v1 notes the print-file close; census field 24
+		// follows EDT (field 23), after the document closed
+		"D3A8CE", // BRS: v1 notes the resource wrapper; census fields 2
+		// and 6 are print-file level, before BDT (field 8)
+		"D3A9CE": // ERS: so the document must not be open
+		if st.inDoc {
+			return st.fail(id, afp.KindStructure, "print-file field inside document")
+		}
+	case "D3ABC3", // MDR: v1 notes the map; the census places it at field
+		// 11, inside the document (BDT at census field 8) — mirrors the
+		// MCF/PTD "environment field outside document" guard
+		"D3A6AF": // PGD: v1 notes the page descriptor; census field 12
 		if !st.inDoc {
 			return st.fail(id, afp.KindStructure, "environment field outside document")
 		}
