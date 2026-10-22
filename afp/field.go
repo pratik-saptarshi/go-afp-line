@@ -74,8 +74,11 @@ func (f *BDT) Encode() []byte {
 
 // EDT is an End Document structured field (D3A9A8).
 type EDT struct {
-	Intro    Introducer
-	DocName  string
+	Intro      Introducer
+	DocName    string
+	HasDocName bool // true when the 8-byte name was present on the wire,
+	// even if it decodes to empty (all-spaces); required for
+	// byte-identical re-encoding
 	Reserved [2]byte
 	Triplets Triplets
 }
@@ -86,8 +89,10 @@ func (f *EDT) TypeID() string { return f.Intro.TypeIDString() }
 // Encode implements Field.
 func (f *EDT) Encode() []byte {
 	body := make([]byte, 0, 10)
-	body = append(body, encodeCHAR8(f.DocName)...)
-	body = append(body, f.Reserved[0], f.Reserved[1])
+	if f.HasDocName {
+		body = append(body, encodeCHAR8(f.DocName)...)
+		body = append(body, f.Reserved[0], f.Reserved[1])
+	}
 	body = append(body, f.Triplets.Encode()...)
 	return encodeField(f.Intro, body)
 }
@@ -191,7 +196,7 @@ func buildRegistry() map[[3]byte]fieldSpec {
 	}
 	// Typed in this task (contract §3).
 	add([3]byte{0xD3, 0xA8, 0xA8}, "BDT", kindTyped, decodeDocField("BDT", newBDT))
-	add([3]byte{0xD3, 0xA9, 0xA8}, "EDT", kindTyped, decodeDocField("EDT", newEDT))
+	add([3]byte{0xD3, 0xA9, 0xA8}, "EDT", kindTyped, decodeEDTField)
 	add([3]byte{0xD3, 0xA8, 0xAF}, "BPG", kindTyped, decodePageField("BPG", newBPG))
 	add([3]byte{0xD3, 0xA9, 0xAF}, "EPG", kindTyped, decodePageField("EPG", newEPG))
 	// Contracted in-subset; typed decoders arrive in later tasks.
@@ -432,6 +437,35 @@ func newBDT(in Introducer, name string, reserved [2]byte, triplets Triplets) Fie
 
 func newEDT(in Introducer, name string, reserved [2]byte, triplets Triplets) Field {
 	return &EDT{Intro: in, DocName: name, Reserved: reserved, Triplets: triplets}
+}
+
+// decodeEDTField decodes EDT (D3A9A8): DocName CHAR[8] (0-7) + reserved
+// (8-9) + triplets (10-n), with the DocName block optional (BPG precedent):
+// the 0020 profile file carries a bare 8-byte EDT (introducer only). The
+// < 10 floor applies to all non-empty data, so data[0:8] is never sliced
+// from a short buffer.
+func decodeEDTField(in Introducer, data []byte) (Field, error) {
+	switch {
+	case len(data) == 0:
+		// Introducer only: no triplet parsing on empty data, there is
+		// nothing to parse.
+		return &EDT{Intro: in, HasDocName: false}, nil
+	case len(data) >= 10:
+		f, err := decodeDocField("EDT", newEDT)(in, data)
+		if err != nil {
+			return nil, err
+		}
+		f.(*EDT).HasDocName = true
+		return f, nil
+	default:
+		return nil, DecodeError{
+			FieldID: in.TypeIDString(),
+			Offset:  in.HeaderLength(),
+			Kind:    KindStructure,
+			Reason: fmt.Sprintf("EDT: need 0 or >=10 data bytes (DocName+reserved), have %d",
+				len(data)),
+		}
+	}
 }
 
 // decodePageField decodes BPG/EPG: PageName CHAR[8] (0-7, optional),

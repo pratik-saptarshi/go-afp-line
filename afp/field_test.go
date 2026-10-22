@@ -24,6 +24,16 @@ var (
 		0xC8, 0xC5, 0xD3, 0xD3, 0xD6, 0xE6, 0xD3, 0xC4, // "HELLOWLD"
 		0x00, 0x00,
 	}
+	// EDT with no DocName: introducer only, SFLength=8 (0020 profile file).
+	edtNoName = []byte{0x00, 0x08, 0xD3, 0xA9, 0xA8, 0x00, 0x00, 0x00}
+	// BDT with no DocName: introducer only, SFLength=8 — still rejected
+	// (BDT strictness unchanged).
+	bdtNoName = []byte{0x00, 0x08, 0xD3, 0xA8, 0xA8, 0x00, 0x00, 0x00}
+	// EDT claiming 12 bytes but carrying only 4 data bytes: truncated data.
+	edtTruncatedData = []byte{
+		0x00, 0x0C, 0xD3, 0xA9, 0xA8, 0x00, 0x00, 0x00,
+		0xC8, 0xC5, 0xD3, 0xD3,
+	}
 	// BPG, SFLength=16: introducer + PageName(8).
 	bpgPage = []byte{
 		0x00, 0x10, 0xD3, 0xA8, 0xAF, 0x00, 0x00, 0x00,
@@ -81,6 +91,56 @@ var (
 		0x00, 0x00, 0x00, 0x00,
 	}
 )
+
+func TestDecodeField_BareEDT(t *testing.T) {
+	// 1. bare EDT (8-byte introducer, zero data) → *EDT, HasDocName == false.
+	f, err := DecodeField(edtNoName)
+	if err != nil {
+		t.Fatalf("DecodeField(EDT, no name) error: %v", err)
+	}
+	edt, ok := f.(*EDT)
+	if !ok {
+		t.Fatalf("type = %T, want *EDT", f)
+	}
+	if edt.HasDocName {
+		t.Errorf("HasDocName = true, want false: no name was on the wire")
+	}
+	// 2. Encode() of that value → byte-identical to the 8-byte input.
+	if got := f.Encode(); !bytes.Equal(got, edtNoName) {
+		t.Errorf("Encode() = %X, want %X", got, edtNoName)
+	}
+	// 3. EDT with 4 data bytes → DecodeError KindStructure (not a panic).
+	_, err = DecodeField(edtTruncatedData)
+	derr, ok := err.(DecodeError)
+	if !ok {
+		t.Fatalf("DecodeField(EDT, 4 data bytes) error = %T (%v), want DecodeError", err, err)
+	}
+	if derr.Kind != KindStructure {
+		t.Errorf("Kind = %q, want KindStructure", derr.Kind)
+	}
+	// 4. bare BDT (zero data) → DecodeError KindStructure (BDT strictness
+	// unchanged).
+	_, err = DecodeField(bdtNoName)
+	derr, ok = err.(DecodeError)
+	if !ok {
+		t.Fatalf("DecodeField(BDT, no name) error = %T (%v), want DecodeError", err, err)
+	}
+	if derr.Kind != KindStructure {
+		t.Errorf("Kind = %q, want KindStructure", derr.Kind)
+	}
+	// 5. EDT with 10 data bytes → *EDT with HasDocName == true, as before.
+	f, err = DecodeField(edtHello)
+	if err != nil {
+		t.Fatalf("DecodeField(EDT) error: %v", err)
+	}
+	edt, ok = f.(*EDT)
+	if !ok {
+		t.Fatalf("type = %T, want *EDT", f)
+	}
+	if !edt.HasDocName {
+		t.Errorf("HasDocName = false, want true: the 8-byte name was on the wire")
+	}
+}
 
 func TestDecodeField_BDT(t *testing.T) {
 	f, err := DecodeField(bdtHello)
