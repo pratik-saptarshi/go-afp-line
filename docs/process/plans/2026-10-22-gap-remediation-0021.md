@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Remediate, in the go-afp-line library, the mechanical gaps DAP Decision 0021 recorded against v0.1.0-beta.1 — 10 unregistered SFIDs aborting `DecodeField`, 6 of them additionally aborting `Reduce`, and the bare-EDT length strictness — so the owner-approved 0020 profile file decodes and reduces without abort. This is library improvement work; it is **not** the DAP adoption decision.
+**Goal:** Remediate, in the go-afp-line library, the mechanical gaps DAP Decision 0021 recorded against v0.1.0-beta.1 — 10 unregistered SFIDs aborting `DecodeField`, 6 of them additionally aborting `Reduce`, and the bare-EDT length strictness — so the owner-approved 0020 profile file decodes without abort and reduces without abort on the contracted subset. (Real-file `Reduce` outcome recorded under Test Plan: it aborts on the contract-correct afplib-only PTOCA `0x80` diagnostic — a parked product decision, not a defect of this plan.) This is library improvement work; it is **not** the DAP adoption decision.
 
 **Architecture:** Table-driven registry extension in `afp/field.go` (10 new rows reusing the existing `kindContracted`/`kindExcluded` → `*RawField` passthrough), accept-and-note cases for the 6 contracted SFIDs in `afptoline/reduce.go`'s `visitRaw` (the abort lives there, not just in the registry), and a BPG-style presence flag for the introducer-only EDT form so byte-identical re-encoding is preserved. No new dependencies, no API shape changes; the default contract (unknown SFID aborts) is preserved.
 
@@ -271,7 +271,7 @@ git commit -m "fix(afp): accept introducer-only EDT with byte-identical re-encod
 - After Task 4: full `go test ./...`, `go vet ./...`, `gofmt -l .` empty — the repo's pre-PR gate.
 - Real-file acceptance (runnable locally — no longer an external dependency): the hash-verified `/home/hatch/workspace/afp-samples/health/01_Health_Coverage.afp` (read-only; never commit it):
   - `SplitFields` → 25 fields, no error; `DecodeField` each → no aborts;
-  - `Reduce` → completes; exclusions recorded exactly for the excluded set {BRG, ERG, BOC, EOC, OCD, IOB} (BRG/ERG are pre-existing excluded entries at fields 1 and 7);
+  - `Reduce` → ABORTS with `unknown PTOCA control sequence 0x80` (chained sequence, unchained base 0x80, inside a PTX field at stream offset ~6064). This is contract-correct strict-subset behavior, not a defect of this plan: 0x80 is afplib-only and deliberately excluded from the contracted subset by the 2-of-3 source rule (subset-contract.md §5; docs/_evidence/contract-research.md:232), and `afptoline/ptoca.go` is untouched by this plan. Parked product decision for the owner: amend the contract to admit afplib-only PTOCA codes (needs IBM-source verification of 0x80's semantics) OR accept the loud 0x80 diagnostic as the expected real-file outcome;
   - `RoundTrip` → byte-identical (this is what caught the v1 draft's Task 3 defect — it stays in the gate).
 - Fidelity non-claim: none of the above is fidelity evidence per 0021 §(i). The completion report states the mechanical result only.
 
@@ -279,7 +279,7 @@ git commit -m "fix(afp): accept introducer-only EDT with byte-identical re-encod
 
 - [ ] AC1: `gofmt` clean, `go vet ./...` clean, `go test ./...` green; CI (build, fuzz-smoke, govulncheck) green at the exact PR head.
 - [ ] AC2: All 10 SFIDs decode without abort — BOC/EOC/OCD/IOB with `Excluded=true`, the other 6 with `Excluded=false`; registry↔contract parity test green.
-- [ ] AC3: `Reduce` completes on the census-order stream and on the real profile file. Synthetic stream → exclusions recorded exactly for BOC/EOC/OCD/IOB. Real file → exclusions recorded exactly for the full excluded set {BRG, ERG, BOC, EOC, OCD, IOB} (BRG/ERG are pre-existing `kindExcluded` entries at fields 1 and 7). Zero aborts in both.
+- [ ] AC3: `Reduce` completes on the census-order stream (exclusions recorded exactly for BOC/EOC/OCD/IOB; zero aborts). On the real profile file `Reduce` aborts with the contract-correct `unknown PTOCA control sequence 0x80` diagnostic — see Real-file acceptance above; the real-file exclusion-set expectation is superseded by the parked afplib-only-codes product decision.
 - [ ] AC4: `RoundTrip` byte-identical on the real profile file, including the bare EDT.
 - [ ] AC5: Bare 8-byte EDT decodes and re-encodes byte-identically; EDT with 1–9 data bytes still errors; BDT strictness unchanged.
 - [ ] AC6: An SFID in neither registry (e.g. `D3FFFF`) still aborts with the exact existing error — default contract preserved.
