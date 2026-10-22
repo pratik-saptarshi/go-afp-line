@@ -118,6 +118,7 @@ chained flag; codes below are the unchained base (chained = base `|` 0x01).
 | C2 | SIA — Set Intercharacter Adjustment | inter-character spacing |
 | C4 | SVI — Set Variable-Space Character Increment | variable-space increment |
 | 74 | STC — Set Text Color | color specification |
+| 80 | SEC — Set Extended Text Color | extended color specification (recorded, not applied) |
 | F2 | BSU — Begin Suppression | begin suppressed text block |
 | F4 | ESU — End Suppression | end suppressed text block |
 | F0 | SCFL — Set Coded Font Local | font switch by local ID |
@@ -131,7 +132,10 @@ chained flag; codes below are the unchained base (chained = base `|` 0x01).
 
 **Corrections applied:** the plan draft named `AMC` and `SIC`; no source defines either —
 the correct sequences are **AMI (C6)** and **SIA (C2)**. Afplib-only codes
-(0x72, 0x76, 0x78, 0x80) are excluded by the 2-of-3 rule.
+(0x72, 0x76, 0x78) are excluded by the 2-of-3 rule. 0x80 (SEC) was excluded on the
+same grounds, but IBM's PTOCA Reference (SC31-6803-02, pp. 79–80) defines it —
+see `docs/_evidence/ptoca-0x80-research.md` — so SEC is admitted, recorded without
+being applied (IBM's sanctioned fallback for unhandled color is the device default).
 
 ## 6. Code pages
 
