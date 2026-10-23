@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/pratik-saptarshi/go-afp-line/afp"
@@ -43,11 +44,13 @@ const DefaultMaxTextBytes = 1 << 20
 // and their runs placed in PDF user space (Y flipped via medium.go).
 //
 // Contracted-but-untyped structural fields (BNG/ENG, BAG/EAG, BPT/EPT) are
-// pairing-validated; their parameters are uninterpreted in v1. MCF/PTD and
-// the print-file/resource envelope fields (BPF/EPF, BRS/ERS, PGD, MDR) are
-// accepted and noted (v1: parameters uninterpreted). Excluded fields become
-// line.Exclusion diagnostics via exclusionFor; truly unknown field types abort
-// per the decoder's abort-vs-diagnose policy.
+// pairing-validated; their parameters are uninterpreted in v1. The print-file
+// and resource envelope fields (BPF/EPF, BRS/ERS, PGD, MDR) and PTD are
+// accepted and noted (v1: parameters uninterpreted). MCF is parsed: its
+// repeating groups become the LID→coded-font mapping SCFL local font IDs
+// resolve through. Excluded fields become line.Exclusion diagnostics via
+// exclusionFor; truly unknown field types abort per the decoder's
+// abort-vs-diagnose policy.
 //
 // The total decoded text is bounded by DefaultMaxTextBytes (see
 // ReduceWithBudget): an RPS-heavy stream fails with afp.DecodeError rather
@@ -157,6 +160,12 @@ type reduceState struct {
 	// BPT, discarded on EPT, cleared on BPG (new page = new coordinate
 	// space); a PTX outside any BPT lazily starts (and keeps) a stream.
 	ptxSt *ptocaState
+	// mcf is the parsed Map Coded Font mapping, nil until the first MCF
+	// in the document. SCFL local font IDs resolve through it to coded
+	// font names (and from there to pinned metrics); a nil mcf means no
+	// MCF has appeared in the current document, which is a loud error
+	// for any nonzero LID — never a silent default.
+	mcf *afp.MCFMapping
 }
 
 // groupKind identifies a group delimiter on the pairing stack. BPG rides
@@ -219,6 +228,7 @@ func (st *reduceState) visit(f afp.Field) error {
 			return st.fail(t.TypeID(), afp.KindStructure, "nested BDT: document already open")
 		}
 		st.inDoc = true
+		st.mcf = nil // mappings never leak across documents
 		return nil
 	case *afp.EDT:
 		if !st.inDoc {
@@ -344,8 +354,19 @@ func (st *reduceState) visitRaw(t *afp.RawField) error {
 		}
 		st.closeGroup() // grpBPT
 		st.ptxSt = nil  // text object closed: discard the stream
-	case "D3AB8A", // MCF: v1 notes the mapping; fixtures carry none
-		"D3B19B": // PTD: v1 notes the descriptor; fixtures carry no AEG
+	case "D3AB8A": // MCF: parse the LID→coded-font mapping and keep it
+		// for SCFL resolution. A later MCF in the same document replaces
+		// the earlier map; the BDT case resets the pointer, so maps never
+		// leak across documents.
+		if !st.inDoc {
+			return st.fail(id, afp.KindStructure, "environment field outside document")
+		}
+		m, err := afp.ParseMCFMapping(t.Data)
+		if err != nil {
+			return err
+		}
+		st.mcf = &m
+	case "D3B19B": // PTD: v1 notes the descriptor; fixtures carry no AEG
 		if !st.inDoc {
 			return st.fail(id, afp.KindStructure, "environment field outside document")
 		}
@@ -445,7 +466,7 @@ func (st *reduceState) visitPTX(t *afp.RawField) error {
 	}
 	st.textLeft -= n
 	for _, run := range runs {
-		fontID, err := fontIDForLID(run.FontID, st.off)
+		fontID, err := fontIDForLID(run.FontID, st.mcf, st.off)
 		if err != nil {
 			return err
 		}
@@ -471,36 +492,58 @@ func (st *reduceState) visitPTX(t *afp.RawField) error {
 
 // advanceFunc returns the reducer's inline-advance closure for the PTOCA
 // decoder: SCFL local ID → pinned font metrics → width in points at the
-// default size. Unmapped fonts and unknown registry IDs fail loudly;
-// v1 never guesses metrics.
+// default size. Unmapped fonts fail loudly via fontIDForLID, which also
+// verified the ID against the pinned registry; v1 never guesses metrics.
 func (st *reduceState) advanceFunc() advanceFunc {
 	return func(lid byte, text string) (float64, error) {
-		id, err := fontIDForLID(lid, st.off)
+		id, err := fontIDForLID(lid, st.mcf, st.off)
 		if err != nil {
 			return 0, err
 		}
-		m, ok := line.LookupFont(id)
-		if !ok {
-			return 0, afp.DecodeError{
-				Kind:   afp.KindValidation,
-				Reason: fmt.Sprintf("pinned font %q has no metrics", id),
-			}
-		}
+		// fontIDForLID verified the ID against the pinned registry, so
+		// the metrics lookup below cannot miss; it stays as the metrics
+		// source rather than being re-derived here.
+		m, _ := line.LookupFont(id)
 		return m.Width(text, defaultFontSize), nil
 	}
 }
 
 // fontIDForLID maps a PTOCA SCFL local font ID to a pinned line font ID.
-// LID 0 is the default font. Any other LID is a loud error: without an MCF
-// mapping we would be guessing metrics, and v1 never guesses.
-func fontIDForLID(lid byte, offset int) (string, error) {
+// LID 0 is the default font. Any other LID resolves through the MCF
+// mapping: without an MCF in the stream, or with no entry for the LID, the
+// reduction fails loudly — v1 never guesses metrics. A mapped name with no
+// pinned metrics, and an LID whose MCF group identifies the font in a form
+// other than an X'8E' coded-font-name reference, likewise fail loudly.
+func fontIDForLID(lid byte, mcf *afp.MCFMapping, offset int) (string, error) {
 	if lid == 0 {
 		return defaultFontID, nil
+	}
+	if mcf == nil {
+		return "", afp.DecodeError{
+			Offset: offset,
+			Kind:   afp.KindValidation,
+			Reason: fmt.Sprintf("SCFL local font ID %d has no MCF mapping (no MCF in stream)", lid),
+		}
+	}
+	if name, ok := mcf.ByLID[lid]; ok {
+		if _, pinned := line.LookupFont(name); !pinned {
+			return "", afp.DecodeError{
+				Kind:   afp.KindValidation,
+				Reason: fmt.Sprintf("coded font %q (MCF local font ID %d) has no pinned metrics", name, lid),
+			}
+		}
+		return name, nil
+	}
+	if slices.Contains(mcf.Unsupported, lid) {
+		return "", afp.DecodeError{
+			Kind:   afp.KindValidation,
+			Reason: fmt.Sprintf("MCF local font ID %d uses unsupported font identification (only X'8E' coded-font-name references are mapped)", lid),
+		}
 	}
 	return "", afp.DecodeError{
 		Offset: offset,
 		Kind:   afp.KindValidation,
-		Reason: fmt.Sprintf("SCFL local font ID %d has no pinned metrics mapping (MCF unmapped)", lid),
+		Reason: fmt.Sprintf("SCFL local font ID %d has no MCF mapping (MCF present, LID unmapped)", lid),
 	}
 }
 

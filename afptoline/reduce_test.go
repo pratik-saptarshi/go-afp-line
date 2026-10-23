@@ -1113,14 +1113,15 @@ func TestReduce_ReducerFailSites(t *testing.T) {
 }
 
 // TestReduce_BNGENGAndMCFValid: the valid counterparts of the fail sites
-// above — balanced BNG/ENG brackets the document and an in-document MCF is
-// accepted (v1: noted, parameters uninterpreted), not an abort.
+// above — balanced BNG/ENG brackets the document and an in-document MCF
+// with empty data is accepted (v1: noted, parameters uninterpreted), not
+// an abort. Empty data parses to a zero mapping per ParseMCFMapping.
 func TestReduce_BNGENGAndMCFValid(t *testing.T) {
 	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
 	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
 	bng := rawField([3]byte{0xD3, 0xA8, 0xAD}, ebcdicSpaces(8))
 	eng := rawField([3]byte{0xD3, 0xA9, 0xAD}, ebcdicSpaces(8))
-	mcf := rawField([3]byte{0xD3, 0xAB, 0x8A}, ebcdicSpaces(8))
+	mcf := rawField([3]byte{0xD3, 0xAB, 0x8A}, nil)
 
 	var buf bytes.Buffer
 	for _, f := range [][]byte{bdt, bng, mcf, eng, edt} {
