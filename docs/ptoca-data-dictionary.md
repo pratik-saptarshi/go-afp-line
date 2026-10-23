@@ -24,7 +24,7 @@ for the 19 original sequences; `docs/_evidence/ptoca-0x80-research.md` for SEC.
 | 80 | SEC — Set Extended Text Color | extended color (RGB/CMYK/CIELAB/highlight/OCA) | yes | recorded, not applied |
 | F2 | BSU — Begin Suppression | begin suppressed text block | yes (scoped) | gated text accumulation |
 | F4 | ESU — End Suppression | end suppressed text block | yes (scoped) | gated text accumulation |
-| F0 | SCFL — Set Coded Font Local | font switch by local ID | yes | decoder records LID (surfaced as Run.FontID); Reduce rejects non-zero LIDs without a pinned metrics mapping (loud error — v1 never guesses metrics) |
+| F0 | SCFL — Set Coded Font Local | font switch by local ID | yes | decoder records LID (surfaced as Run.FontID); Reduce resolves non-zero LIDs through the MCF mapping (LID → coded font name → pinned metrics); unmapped LIDs fail loudly — v1 never guesses metrics |
 | F6 | STO — Set Text Orientation | text orientation / rotation | yes | tracked, not applied (orientation recorded in state; not carried into runs) |
 | DA | TRN — Transparent Data | literal text bytes follow | no (immediate) | decoded as text |
 | EE | RPS — Repeat String | repeat character/string | no (immediate) | expanded to text |
@@ -51,22 +51,38 @@ Sources: IBM MO:DCA Reference — MCF Syntax (p. 229), Fully Qualified Name
 triplet X'02' (pp. 341–342), Resource Local Identifier triplet X'24' (p. 368).
 The wire rules below are paraphrased; the reference is normative.
 
-An MCF (Map Coded Font, D3AB8A) field carries 1–254 repeating groups. Each
+An MCF (Map Coded Font, D3AB8A) field carries zero or more repeating groups. Each
 group opens with a 2-byte big-endian `RGLength` (self-inclusive) followed by a
-run of MO:DCA triplets (`afp.ParseMCFMapping`).
+run of MO:DCA triplets (`afp.ParseMCFMapping`). An empty MCF yields an empty
+mapping, not an error.
 
 - **LID** comes from the X'24' triplet: triplet-data byte 1 is the resource
   type, byte 2 the one-byte LID (p. 368). Inside an MCF group only resource
   type X'05' (coded font) is permitted; anything else is a loud
   `KindStructure` error. A group without an X'24' borrows the architected
   default LID X'00' — applied per group, which is v1's reading of the
-  reference default (p. 231).
+  reference default (p. 231). Rationale for the per-group reading: the
+  repeating group is the unit that specifies a LID, so every group is keyed;
+  the uniform duplicate rule below makes collisions loud rather than
+  silently merged, which is the fail-closed outcome the reference's
+  uniqueness rule demands.
 - **Name** comes from the X'02' triplet with FQNType X'8E' (coded-font name
   reference): triplet-data byte 1 is the FQNType, byte 2 the format, and the
-  name bytes follow, decoded as EBCDIC-037 (pp. 341–342).
+  name bytes follow, decoded as EBCDIC-037 (pp. 341–342). X'02' uniqueness is
+  per FQNType, not per group: X'85' (code page name) + X'86' (charset name)
+  in one group is the architecturally standard pair (p. 230); a repeated
+  FQNType in one group is a loud `KindStructure` error.
 - **Duplicate LIDs are a loud error:** the X'24' LID is defined as a unique
   identifier (p. 368), so a repeated LID across the field's groups aborts
-  with `KindStructure` — never merged, never shadowed.
+  with `KindStructure` — never merged, never shadowed. This knowingly
+  ignores p. 232's exception for double-byte font sections (same X'24' value
+  across contiguous groups): v1 does not implement double-byte fonts, so
+  such MCFs abort loudly at parse time rather than mis-resolving later.
+- **LID 0 is not special to the parser:** the duplicate rule applies to LID 0
+  uniformly — two X'24'-less groups both borrowing the default abort, and an
+  explicit X'24' ResLID X'00' group participates like any other. LID 0 entries
+  may exist in `ByLID`, but they are never consulted: SCFL LID 0 bypasses the
+  map to the default font (`afptoline/fontIDForLID`).
 - **Other identification forms are tracked, never silently skipped:** a group
   with an X'24' but no X'8E' name (e.g. GRID reference X'84', or a
   code-page/charset pair X'85'/X'86') is recorded in
@@ -96,8 +112,8 @@ resources stay excluded per the subset contract.
 v1 never guesses metrics. Every broken link in the chain is a loud
 `afp.DecodeError` (`fontIDForLID`, `afptoline/reduce.go`):
 
-- duplicate LID or non-X'05' ResType in an MCF field → `KindStructure` at
-  parse time;
+- duplicate LID, repeated FQNType in one group, or non-X'05' ResType in an MCF
+  field → `KindStructure` at parse time;
 - `"SCFL local font ID %d has no MCF mapping (no MCF in stream)"` — nonzero
   SCFL LID with no MCF yet in the document;
 - `"SCFL local font ID %d has no MCF mapping (MCF present, LID unmapped)"`

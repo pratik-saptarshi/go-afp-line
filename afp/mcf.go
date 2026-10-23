@@ -36,13 +36,13 @@ const (
 //
 // Each group starts with a 2-byte big-endian RGLength (inclusive of itself)
 // followed by a run of MO:DCA triplets. RGLength bounds violations, malformed
-// X'24'/X'02' triplets, duplicate LIDs, and unexpected ResType values are
-// DecodeError{Kind: KindStructure} — this parser never guesses. An unexpected
-// FQNType (anything but X'8E') is not an error: the group simply carries no
-// coded-font name. A group without an X'24' triplet uses LID 0x00 (the
-// architected default, applied per group); only a group carrying an X'24' but
-// no X'8E' FQN is recorded in Unsupported. Empty input yields a zero
-// MCFMapping with non-nil empty collections and no error.
+// X'24'/X'02' triplets, duplicate LIDs, repeated FQNTypes within a group, and
+// unexpected ResType values are DecodeError{Kind: KindStructure} — this parser
+// never guesses. An unexpected FQNType (anything but X'8E') is not an error:
+// the group simply carries no coded-font name. A group without an X'24' triplet
+// uses LID 0x00 (the architected default, applied per group); only a group
+// carrying an X'24' but no X'8E' FQN is recorded in Unsupported. Empty input
+// yields a zero MCFMapping with non-nil empty collections and no error.
 func ParseMCFMapping(data []byte) (MCFMapping, error) {
 	m := MCFMapping{ByLID: map[byte]string{}, Unsupported: []byte{}}
 	seen := map[byte]bool{}
@@ -77,10 +77,15 @@ func ParseMCFMapping(data []byte) (MCFMapping, error) {
 			return MCFMapping{}, err
 		}
 		if seen[lid] {
+			// MO:DCA p. 232 permits the same X'24' value across contiguous
+			// groups for double-byte font sections; v1 does not implement
+			// double-byte fonts, so the rejection is kept and the
+			// diagnostic says so loudly (previously-reducing files with
+			// such MCFs now abort here rather than mis-resolving later).
 			return MCFMapping{}, DecodeError{
 				Offset: pos + 2,
 				Kind:   KindStructure,
-				Reason: fmt.Sprintf("duplicate MCF local font ID %d", lid),
+				Reason: fmt.Sprintf("duplicate MCF local font ID %d; v1 does not support the MO:DCA p. 232 double-byte font exception", lid),
 			}
 		}
 		seen[lid] = true
@@ -104,7 +109,8 @@ func ParseMCFMapping(data []byte) (MCFMapping, error) {
 // base is the group's byte offset within the field data, used to
 // re-base error offsets.
 func parseMCFGroup(triplets Triplets, base int) (lid byte, name string, hasName, hasX24 bool, err error) {
-	var seenX24, seenX02 bool
+	var seenX24 bool
+	seenFQNType := map[byte]bool{}
 	toff := 0 // running triplet offset within the group body
 	for _, tr := range triplets {
 		off := base + toff
@@ -129,14 +135,20 @@ func parseMCFGroup(triplets Triplets, base int) (lid byte, name string, hasName,
 			}
 			lid = tr.Data[1]
 		case mcfTripletFQN:
-			if seenX02 {
+			// Uniqueness is per FQNType, not per group: MO:DCA (MCF
+			// syntax) lists X'85' (code page name) + X'86' (charset name)
+			// as a mandatory minimum identification pair — two X'02'
+			// triplets with different FQNTyp es in one group is the
+			// standard real-world shape. A repeated FQNType is malformed.
+			fqnType := firstByte(tr.Data)
+			if seenFQNType[fqnType] {
 				return 0, "", false, false, DecodeError{
 					Offset: off,
 					Kind:   KindStructure,
-					Reason: "MCF: duplicate X'02' triplet in one repeating group",
+					Reason: fmt.Sprintf("duplicate FQN type %02X in one repeating group", fqnType),
 				}
 			}
-			seenX02 = true
+			seenFQNType[fqnType] = true
 			if len(tr.Data) < 2 {
 				return 0, "", false, false, DecodeError{
 					Offset: off,

@@ -188,7 +188,7 @@ func (st *ptocaState) markStart() {
 // ESU fail loudly with afp.DecodeError; nothing is silently skipped.
 //
 // v1 limitations (deliberate): SVI variable-space increments are tracked but
-// not applied to advancement (see flush); DIR/DBR rules and STC color are
+// not applied to advancement (see flush); DIR/DBR rules and STC/SEC color are
 // parsed but not emitted as runs.
 func DecodePTOCA(f afp.Field, cp afp.CodePage) ([]Run, error) {
 	return decodePTOCA(f, cp, -1, nil)

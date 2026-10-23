@@ -98,8 +98,8 @@ func TestParseMCFMapping_DuplicateLID(t *testing.T) {
 		)
 		_, err := ParseMCFMapping(data)
 		derr := assertDecodeKindStructure(t, err, "duplicate LID in ByLID")
-		if derr.Reason != "duplicate MCF local font ID 1" {
-			t.Errorf("reason: got %q, want %q", derr.Reason, "duplicate MCF local font ID 1")
+		if derr.Reason != "duplicate MCF local font ID 1; v1 does not support the MO:DCA p. 232 double-byte font exception" {
+			t.Errorf("reason: got %q, want %q", derr.Reason, "duplicate MCF local font ID 1; v1 does not support the MO:DCA p. 232 double-byte font exception")
 		}
 	})
 	t.Run("mapped then unsupported", func(t *testing.T) {
@@ -109,8 +109,8 @@ func TestParseMCFMapping_DuplicateLID(t *testing.T) {
 		)
 		_, err := ParseMCFMapping(data)
 		derr := assertDecodeKindStructure(t, err, "duplicate LID across ByLID/Unsupported")
-		if derr.Reason != "duplicate MCF local font ID 3" {
-			t.Errorf("reason: got %q, want %q", derr.Reason, "duplicate MCF local font ID 3")
+		if derr.Reason != "duplicate MCF local font ID 3; v1 does not support the MO:DCA p. 232 double-byte font exception" {
+			t.Errorf("reason: got %q, want %q", derr.Reason, "duplicate MCF local font ID 3; v1 does not support the MO:DCA p. 232 double-byte font exception")
 		}
 	})
 }
@@ -135,9 +135,9 @@ func TestParseMCFMapping_DuplicateTripletInGroup(t *testing.T) {
 			tripletX02(0x8E, fixProp10),
 		)
 		_, err := ParseMCFMapping(data)
-		derr := assertDecodeKindStructure(t, err, "second X'02' in one repeating group")
-		if derr.Reason != "MCF: duplicate X'02' triplet in one repeating group" {
-			t.Errorf("reason: got %q, want %q", derr.Reason, "MCF: duplicate X'02' triplet in one repeating group")
+		derr := assertDecodeKindStructure(t, err, "second X'02' with same FQNType in one repeating group")
+		if derr.Reason != "duplicate FQN type 8E in one repeating group" {
+			t.Errorf("reason: got %q, want %q", derr.Reason, "duplicate FQN type 8E in one repeating group")
 		}
 	})
 }
@@ -179,8 +179,8 @@ func TestParseMCFMapping_DuplicateUnsupported(t *testing.T) {
 	)
 	_, err := ParseMCFMapping(data)
 	derr := assertDecodeKindStructure(t, err, "duplicate LID within Unsupported")
-	if derr.Reason != "duplicate MCF local font ID 3" {
-		t.Errorf("reason: got %q, want %q", derr.Reason, "duplicate MCF local font ID 3")
+	if derr.Reason != "duplicate MCF local font ID 3; v1 does not support the MO:DCA p. 232 double-byte font exception" {
+		t.Errorf("reason: got %q, want %q", derr.Reason, "duplicate MCF local font ID 3; v1 does not support the MO:DCA p. 232 double-byte font exception")
 	}
 }
 
@@ -230,5 +230,66 @@ func TestParseMCFMapping_Empty(t *testing.T) {
 	}
 	if len(m.ByLID) != 0 || len(m.Unsupported) != 0 {
 		t.Errorf("zero mapping: got %+v, want empty", m)
+	}
+}
+
+func TestParseMCFMapping_FQNTypePair(t *testing.T) {
+	// MO:DCA p. 230: X'85' (code page name) + X'86' (charset name) is a
+	// mandatory minimum identification pair — two X'02' triplets with
+	// *different* FQNTyp es in one repeating group. The group carries no
+	// X'8E' coded-font name, so its LID lands in Unsupported, not ByLID.
+	data := mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x85, fixMono10), tripletX02(0x86, fixProp10))
+	m, err := ParseMCFMapping(data)
+	if err != nil {
+		t.Fatalf("ParseMCFMapping: unexpected error: %v", err)
+	}
+	if len(m.ByLID) != 0 {
+		t.Errorf("ByLID: got %v, want empty", m.ByLID)
+	}
+	if !reflect.DeepEqual(m.Unsupported, []byte{0x01}) {
+		t.Errorf("Unsupported: got %v, want [1]", m.Unsupported)
+	}
+}
+
+func TestParseMCFMapping_DuplicateFQNType(t *testing.T) {
+	// Two X'02' triplets with the *same* FQNType in one group is malformed:
+	// fail loudly rather than shadowing one name with the other.
+	data := mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x8E, fixMono10), tripletX02(0x8E, fixProp10))
+	_, err := ParseMCFMapping(data)
+	derr := assertDecodeKindStructure(t, err, "duplicate FQNType")
+	if want := "duplicate FQN type 8E in one repeating group"; derr.Reason != want {
+		t.Errorf("Reason: got %q, want %q", derr.Reason, want)
+	}
+}
+
+func TestParseMCFMapping_DuplicateLIDDocumentsP232(t *testing.T) {
+	// The blanket duplicate-LID rejection knowingly ignores MO:DCA p. 232's
+	// exception for double-byte font sections (same X'24' across contiguous
+	// groups): v1 does not implement double-byte fonts, so the diagnostic
+	// must say so loudly instead of citing uniqueness alone.
+	data := append(
+		mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x8E, fixMono10)),
+		mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x8E, fixProp10))...,
+	)
+	_, err := ParseMCFMapping(data)
+	derr := assertDecodeKindStructure(t, err, "duplicate LID documents p. 232")
+	if want := "duplicate MCF local font ID 1; v1 does not support the MO:DCA p. 232 double-byte font exception"; derr.Reason != want {
+		t.Errorf("Reason: got %q, want %q", derr.Reason, want)
+	}
+}
+
+func TestParseMCFMapping_TwoDefaultGroupsDuplicate(t *testing.T) {
+	// Two X'24'-less groups both borrow the architected default LID 0: per
+	// the reference each group maps a *unique* LID, so this is a duplicate,
+	// not a merge. The duplicate rule applies to LID 0 uniformly.
+	data := append(
+		mcfGroup(tripletX02(0x8E, fixMono10)),
+		mcfGroup(tripletX02(0x8E, fixProp10))...,
+	)
+	_, err := ParseMCFMapping(data)
+	derr := assertDecodeKindStructure(t, err, "two default-LID groups")
+	want := "duplicate MCF local font ID 0; v1 does not support the MO:DCA p. 232 double-byte font exception"
+	if derr.Reason != want {
+		t.Errorf("Reason: got %q, want %q", derr.Reason, want)
 	}
 }

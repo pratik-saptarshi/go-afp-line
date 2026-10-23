@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/pratik-saptarshi/go-afp-line/afp"
+	"github.com/pratik-saptarshi/go-afp-line/line"
 )
 
 // Reducer-level tests for MCF-driven SCFL local font ID resolution (Task 2
@@ -176,4 +177,48 @@ func TestReduce_MCFResetAtBDT(t *testing.T) {
 	stream := append(mcfDocFields([][]byte{mapped}, 0x01), mcfDocFields(nil, 0x01)...)
 	_, _, err := Reduce(bytes.NewReader(stream))
 	assertReduceErrContains(t, err, "SCFL local font ID 1 has no MCF mapping (no MCF in stream)")
+}
+
+// TestReduce_MCFParseErrorRebased: a malformed MCF field must report a
+// stream-relative offset (like visitPTX does) and attribute the error to the
+// MCF field — not the payload-relative offset the parser produced.
+func TestReduce_MCFParseErrorRebased(t *testing.T) {
+	// Malformed: RGLength 1 (< 2) → parser error at payload offset 0.
+	// Stream layout: BDT field (8-byte introducer + 10 payload = 18 bytes),
+	// then the MCF field (8-byte introducer). Expected offset: 18 + 8 + 0.
+	doc, _, err := Reduce(bytes.NewReader(mcfReduceStream([]byte{0x00, 0x01}, 0x01)))
+	_ = doc
+	if err == nil {
+		t.Fatal("Reduce succeeded, want MCF structure error")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+	}
+	if derr.FieldID != "D3AB8A" {
+		t.Errorf("FieldID = %q, want %q", derr.FieldID, "D3AB8A")
+	}
+	if derr.Offset != 26 {
+		t.Errorf("Offset = %d, want 26 (stream-relative: BDT 18 + MCF introducer 8 + payload 0)", derr.Offset)
+	}
+}
+
+// TestFontIDForLID_DefaultVerified: LID 0 bypasses the MCF map, but the
+// returned default font ID must still resolve in the pinned registry —
+// advanceFunc's LookupFont call relies on fontIDForLID's verified-ID
+// invariant, and a future registry edit must not silently produce zero
+// widths. (The registry-miss branch itself is untestable without test
+// hooks on the package-level table; the mapped-LID miss path exercises
+// the same loud-error shape via TestReduce_MCFUnpinnedFont.)
+func TestFontIDForLID_DefaultVerified(t *testing.T) {
+	id, err := fontIDForLID(0, nil, 0)
+	if err != nil {
+		t.Fatalf("fontIDForLID(0): unexpected error: %v", err)
+	}
+	if id != "FIX-MONO-10" {
+		t.Errorf("id = %q, want %q", id, "FIX-MONO-10")
+	}
+	if _, ok := line.LookupFont(id); !ok {
+		t.Errorf("LookupFont(%q) missed: LID 0 must return a pinned font", id)
+	}
 }

@@ -363,6 +363,16 @@ func (st *reduceState) visitRaw(t *afp.RawField) error {
 		}
 		m, err := afp.ParseMCFMapping(t.Data)
 		if err != nil {
+			var derr afp.DecodeError
+			if errors.As(err, &derr) {
+				// The parser's offsets are relative to the MCF payload,
+				// which starts after the introducer; rebase them to
+				// stream-relative and attribute the error to the MCF
+				// field, mirroring visitPTX.
+				derr.Offset += st.off + t.Intro.HeaderLength()
+				derr.FieldID = t.TypeID()
+				return derr
+			}
 			return err
 		}
 		st.mcf = &m
@@ -516,6 +526,15 @@ func (st *reduceState) advanceFunc() advanceFunc {
 // other than an X'8E' coded-font-name reference, likewise fail loudly.
 func fontIDForLID(lid byte, mcf *afp.MCFMapping, offset int) (string, error) {
 	if lid == 0 {
+		// LID 0 bypasses the MCF map, but the returned ID is still
+		// verified against the pinned registry: advanceFunc's LookupFont
+		// call relies on this function's verified-ID invariant, and a
+		// future registry edit must fail loudly here rather than
+		// silently advancing zero widths downstream.
+		if _, ok := line.LookupFont(defaultFontID); !ok {
+			return "", afp.DecodeError{Kind: afp.KindValidation, Offset: offset,
+				Reason: fmt.Sprintf("default font %q has no pinned metrics", defaultFontID)}
+		}
 		return defaultFontID, nil
 	}
 	if mcf == nil {

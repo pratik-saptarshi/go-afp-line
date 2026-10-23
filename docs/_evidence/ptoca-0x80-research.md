@@ -34,9 +34,10 @@ IBM **does** define function type `0x80`. Two IBM sources:
 
 **a) Presentation Text Object Content Architecture Reference, SC31-6803-02**
 (IBM official publication library, publibz.boulder.ibm.com/epubs/pdf/ha3p2m00.pdf) —
-the normative PTOCA spec. Chapter 4, "SEC Control Sequence" (p. 79–80):
+the normative PTOCA spec. Chapter 4, the SEC control-sequence chapter (p. 79–80):
 
-- `TYPE X'80' - X'81'` — "Control sequence function type" (syntax table, offset 3).
+- `TYPE X'80' - X'81'` — the syntax table's offset-3 field, identifying the
+  control sequence's function type.
 - Full syntax: `PREFIX X'2B'` (offset 0), `CLASS X'D3'` (offset 1), `LENGTH 14-16`
   (offset 2), `TYPE X'80'-X'81'` (offset 3), reserved zero (offset 4), `COLSPCE`
   (offset 5: `X'01'` RGB, `X'04'` CMYK, `X'06'` highlight color space, `X'08'` CIELAB,
@@ -51,8 +52,8 @@ the normative PTOCA spec. Chapter 4, "SEC Control Sequence" (p. 79–80):
   color.
 
 **b) AFP Programming Guide and Line Data Reference, AFPC-0010-05** (6th ed., Feb 2018;
-AFP Consortium, successor to IBM S544-3884-04; afpconsortium.org). Table 11, "Control
-Sequences Used in PTX Structured Field" (p. 60), PT3 section:
+AFP Consortium, successor to IBM S544-3884-04; afpconsortium.org). Table 11, the
+PTX control-sequence table (p. 60), PT3 section:
 
 - `Set Extended Text Color — xx80 (Unchained / Even Function), xx81 (Chained / Odd Function)`
 - Text (p. 58, paraphrased): PT3 extends PT2 with the SEC sequence to support spot and process colors in text.
@@ -78,9 +79,9 @@ ObjectFunctionSetSpecification — not its PTOCA table.)
 **Presentation-relevant: yes — color only.** SEC sets the foreground color of subsequent text
 (modal: stays in effect until another STC/SEC). It does not move the print position, change
 fonts, or alter layout. Per IBM, the sanctioned degradation for an unsupported color space is
-the **device default color** (exception EC-0E02) — i.e. IBM itself blesses "ignore the color"
-as the fallback, which bounds the risk of a pass-through: worst case is wrong-colored text,
-never mispositioned or corrupted text.
+the **device default color** (exception EC-0E02) — i.e. IBM's own sanctioned fallback
+is to leave the color unapplied, which bounds the risk of a pass-through: worst case is
+wrong-colored text, never mispositioned or corrupted text.
 
 Data bytes (offsets relative to the `2BD3` escape): reserved `00`, `COLSPCE`, 4 reserved
 bytes, `COLSIZE1`–`4`, then `COLVALUE` (1–4 components per the color space).
@@ -88,9 +89,9 @@ bytes, `COLSIZE1`–`4`, then `COLVALUE` (1–4 components per the color space).
 ## 5. The chained bit
 
 Per the AFPC Programming Guide (p. 58): a control sequence may be unchained (even function number) or chained (odd function number). The chain bit is the
-**low-order bit of the function-type byte**. Chained sequences "immediately follow the
-previous one with no intervening X'2BD3' escape sequence"; "the last control sequence in a
-chain must have the even-numbered (unchained) format to signal the end of the chain."
+**low-order bit of the function-type byte**. A chained sequence directly abuts the
+previous one — no `X'2BD3'` escape intervenes — and a chain is terminated by a final
+sequence in the even-numbered (unchained) form, which signals the end of the chain.
 Format: first byte = total length (length byte + function byte + parameters), second byte =
 function code, then 0–253 parameter bytes.
 
