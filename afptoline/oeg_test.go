@@ -333,6 +333,9 @@ func TestReduce_UnclosedBOGAbortsAtEPG(t *testing.T) {
 	if derr.Kind != afp.KindStructure {
 		t.Errorf("error kind = %q, want %q", derr.Kind, afp.KindStructure)
 	}
+	if got := derr.Error(); !contains(got, "at page end") {
+		t.Errorf("diagnostic %q does not name the EPG boundary", got)
+	}
 }
 
 func TestReduce_UnclosedBOGAbortsAtBDT(t *testing.T) {
@@ -390,6 +393,9 @@ func TestReduce_UnclosedBOGAbortsAtBPG(t *testing.T) {
 	if derr.Kind != afp.KindStructure {
 		t.Errorf("error kind = %q, want %q", derr.Kind, afp.KindStructure)
 	}
+	if got := derr.Error(); !contains(got, "at page boundary") {
+		t.Errorf("diagnostic %q does not name the BPG boundary", got)
+	}
 }
 
 // An unclosed BOG at document scope must abort at EDT, not succeed
@@ -414,6 +420,9 @@ func TestReduce_UnclosedBOGAbortsAtEDT(t *testing.T) {
 	}
 	if derr.Kind != afp.KindStructure {
 		t.Errorf("error kind = %q, want %q", derr.Kind, afp.KindStructure)
+	}
+	if got := derr.Error(); !contains(got, "at document end") {
+		t.Errorf("diagnostic %q does not name the EDT boundary", got)
 	}
 }
 
