@@ -49,7 +49,7 @@ type ptocaState struct {
 	// suppression boundaries clear it; SCFL does not.
 	prevWord bool
 	fontID   byte   // SCFL local font identifier
-	color    []byte // STC raw color specification (tracked)
+	color    []byte // STC/SEC raw color specification (tracked, not applied)
 	iornt    uint16 // STO I-axis orientation
 	bornt    uint16 // STO B-axis orientation
 	suppress []byte // BSU LID stack; non-empty means text is suppressed
@@ -188,7 +188,7 @@ func (st *ptocaState) markStart() {
 // ESU fail loudly with afp.DecodeError; nothing is silently skipped.
 //
 // v1 limitations (deliberate): SVI variable-space increments are tracked but
-// not applied to advancement (see flush); DIR/DBR rules and STC color are
+// not applied to advancement (see flush); DIR/DBR rules and STC/SEC color are
 // parsed but not emitted as runs.
 func DecodePTOCA(f afp.Field, cp afp.CodePage) ([]Run, error) {
 	return decodePTOCA(f, cp, -1, nil)
@@ -326,7 +326,7 @@ func (st *ptocaState) exec(ftype byte, params []byte, offset int) (bool, error) 
 // handler validates params and applies one control sequence.
 type handler func(st *ptocaState, params []byte, offset int) error
 
-// ptocaHandlers is the table-driven dispatch for the 19 in-scope control
+// ptocaHandlers is the table-driven dispatch for the 20 in-scope control
 // sequences (subset-contract.md §5). Codes are unchained bases.
 var ptocaHandlers = map[byte]handler{
 	0xD2: doMove(func(st *ptocaState, v int16) { st.bc = float64(v) }),      // AMB absolute baseline
@@ -338,6 +338,7 @@ var ptocaHandlers = map[byte]handler{
 	0xC2: doI16(func(st *ptocaState, v int16) { st.sia = v }),               // SIA intercharacter adjustment
 	0xC4: doU16(func(st *ptocaState, v uint16) { st.svi = v }),              // SVI variable-space increment
 	0x74: doSTC,
+	0x80: doSEC, // SEC set extended text color (recorded, not applied)
 	0xF2: doBSU,
 	0xF4: doESU,
 	0xF0: doSCFL,
@@ -400,6 +401,20 @@ func seqLenError(offset, want, got int) error {
 
 // doSTC records the raw color specification (variable length).
 func doSTC(st *ptocaState, params []byte, _ int) error {
+	st.color = append(st.color[:0], params...)
+	return nil
+}
+
+// doSEC records the Set Extended Text Color specification without applying
+// it, mirroring doSTC: IBM's sanctioned fallback for unhandled color is the
+// device default (PTOCA Reference SC31-6803-02, SEC, p. 79-80). SEC is modal;
+// the last STC/SEC issued determines the recorded color. LENGTH is 14-16
+// (params 12-14) per IBM; anything else is a loud error.
+func doSEC(st *ptocaState, params []byte, offset int) error {
+	if len(params) < 12 || len(params) > 14 {
+		return afp.DecodeError{FieldID: "D3EE9B", Offset: offset, Kind: afp.KindStructure,
+			Reason: fmt.Sprintf("SEC: need 12-14 param bytes (LENGTH 14-16), have %d", len(params))}
+	}
 	st.color = append(st.color[:0], params...)
 	return nil
 }

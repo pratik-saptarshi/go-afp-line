@@ -147,11 +147,13 @@ func (f *EPG) Encode() []byte {
 // the subset contract (out-of-subset: IOCA, GOCA, BCOCA, FOCA, CMOCA,
 // overlays/medium, object containers); false when the field is contracted
 // in-subset but its typed decoder arrives in a later task (e.g. PTX in
-// Task 6). The raw bytes are always preserved so re-encoding stays
-// byte-identical.
+// Task 6). The data bytes are preserved so re-encoding stays
+// byte-identical, except that SFI padding (when the PadFlag was set) is
+// stripped at decode: Data is always the padding-free parameter data and
+// the decoded introducer has the PadFlag cleared.
 type RawField struct {
 	Intro    Introducer
-	Data     []byte // field data after the introducer, verbatim
+	Data     []byte // field data after the introducer, padding-free
 	Excluded bool
 }
 
@@ -389,6 +391,17 @@ func decodeField(b []byte, lenient bool) (Field, error) {
 		}
 	}
 	data := b[in.HeaderLength():]
+	// SFI padding is part of the physical field, not the parameter data:
+	// strip it here so every spec kind (typed, excluded, contracted) sees
+	// padding-free data. The flag is cleared on the decoded introducer so
+	// the introducer keeps describing the data: re-encoding a decoded
+	// padded field yields a well-formed padding-free field rather than one
+	// whose PadFlag claims padding that is no longer there.
+	data, err = stripFieldPadding(data, in)
+	if err != nil {
+		return nil, err
+	}
+	in.Flags &^= flagPad
 	spec, ok := fieldRegistry[in.TypeID]
 	if !ok {
 		if lenient {
@@ -415,6 +428,67 @@ func cloneBytes(b []byte) []byte {
 	cp := make([]byte, len(b))
 	copy(cp, b)
 	return cp
+}
+
+// stripFieldPadding removes SFI padding bytes from the field data portion.
+// Returns data unchanged when the PadFlag is not set.
+//
+// Padding-length encoding is read from the END of the data (MO:DCA
+// Reference, "Structured Field Padding"): a non-zero last byte is the
+// 1-byte form (1–2 bytes of padding); a zero last byte selects the 3-byte
+// form, where the two preceding bytes are the big-endian padding length.
+// The padding length includes the length byte(s) themselves, and 3–255
+// bytes of padding may use either form — but a 1–2 byte padding claimed
+// via the 3-byte form is malformed. Every malformed case is a loud
+// KindStructure DecodeError: padding is never silently accepted or
+// silently dropped.
+func stripFieldPadding(data []byte, in Introducer) ([]byte, error) {
+	if !in.HasPadding() {
+		return data, nil
+	}
+	n := len(data)
+	if n == 0 {
+		return nil, DecodeError{
+			Kind:    KindStructure,
+			FieldID: in.TypeIDString(),
+			Offset:  0,
+			Reason:  "PadFlag set but field has no data bytes",
+		}
+	}
+	var padLen int
+	if data[n-1] == 0x00 {
+		// 3-byte form: last byte must be X'00', the two preceding bytes
+		// are the big-endian padding length.
+		if n < 3 {
+			return nil, DecodeError{
+				Kind:    KindStructure,
+				FieldID: in.TypeIDString(),
+				Offset:  0,
+				Reason:  fmt.Sprintf("PadFlag set: 3-byte padding form needs 3 data bytes, have %d", n),
+			}
+		}
+		padLen = int(data[n-3])<<8 | int(data[n-2])
+		if padLen < 3 {
+			return nil, DecodeError{
+				Kind:    KindStructure,
+				FieldID: in.TypeIDString(),
+				Offset:  0,
+				Reason:  fmt.Sprintf("padding length %d in 3-byte form: 1-2 byte padding must use the 1-byte form", padLen),
+			}
+		}
+	} else {
+		// 1-byte form: the last byte is the padding length.
+		padLen = int(data[n-1])
+	}
+	if padLen < 1 || padLen > n {
+		return nil, DecodeError{
+			Kind:    KindStructure,
+			FieldID: in.TypeIDString(),
+			Offset:  0,
+			Reason:  fmt.Sprintf("padding length %d out of range for %d data bytes", padLen, n),
+		}
+	}
+	return data[:n-padLen], nil
 }
 
 // parseTriplets decodes a field's triplet run, attaching the field's ID and
