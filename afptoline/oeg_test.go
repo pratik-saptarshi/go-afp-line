@@ -260,3 +260,37 @@ func TestReduce_MCFAfterEOGMergesNormally(t *testing.T) {
 		t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindStructure)
 	}
 }
+
+// TestReduce_EPGClearsOpenOEG: an unclosed BOG must not leak its scope past
+// a page boundary — EPG clears the guard. Verified through MCF merge
+// behavior after the page: two MCFs mapping the same LID must hit the
+// uniform duplicate-LID abort (proving inOEG was cleared at EPG; if it
+// leaked, the MCFs would be scope-discarded instead of merged). The MCFs
+// sit after EPG with no intervening BPG on purpose: the MCF case requires
+// only inDoc (not an open page), so no BPG reset can mask a missing EPG
+// reset here.
+func TestReduce_EPGClearsOpenOEG(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bpg := rawField(tBPG, ebcdicSpaces(8))
+	bog := rawField(tBOG, nil)
+	epg := rawField(tEPG, ebcdicSpaces(8))
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	mcfData := mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x8E, mcfFixMono10))
+	mcf := rawField(tMCF, mcfData)
+
+	var buf bytes.Buffer
+	for _, f := range [][]byte{bdt, bpg, bog, epg, mcf, mcf, edt} {
+		buf.Write(f)
+	}
+	_, _, err := Reduce(&buf)
+	if err == nil {
+		t.Fatal("Reduce succeeded, want duplicate-LID abort (guard cleared at EPG)")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+	}
+	if derr.Kind != afp.KindStructure {
+		t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindStructure)
+	}
+}
