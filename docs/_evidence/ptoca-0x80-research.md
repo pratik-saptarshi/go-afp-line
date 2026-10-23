@@ -42,20 +42,20 @@ the normative PTOCA spec. Chapter 4, "SEC Control Sequence" (p. 79–80):
   (offset 5: `X'01'` RGB, `X'04'` CMYK, `X'06'` highlight color space, `X'08'` CIELAB,
   `X'40'` standard OCA color space), reserved (offsets 6–9), `COLSIZE1`–`COLSIZE4`
   (offsets 10–13), `COLVALUE` (offsets 14–17).
-- Semantics: "The Set Extended Text Color control sequence specifies a color value and
-  defines the color space and encoding for that value. The specified color value is applied
-  to foreground areas of the text presentation space" (stroked/filled text, rules,
-  underscores). "This is a modal control sequence." STC and SEC may coexist; "the last
-  issued control sequence determines the current text color." Invalid/unsupported color
-  space raises exception EC-0E02; "the standard action is to use the device default color."
+- Semantics (paraphrased from p. 79–80): SEC carries a color value together with its
+  color space and encoding; the color applies to the foreground areas of the text
+  presentation space (glyph strokes/fills, rules, underscores). It is modal — it
+  remains in effect until superseded. STC and SEC may both appear in a stream;
+  the most recently issued one wins. An invalid or unsupported color space raises
+  exception EC-0E02, whose standard action is to fall back to the device default
+  color.
 
 **b) AFP Programming Guide and Line Data Reference, AFPC-0010-05** (6th ed., Feb 2018;
 AFP Consortium, successor to IBM S544-3884-04; afpconsortium.org). Table 11, "Control
 Sequences Used in PTX Structured Field" (p. 60), PT3 section:
 
 - `Set Extended Text Color — xx80 (Unchained / Even Function), xx81 (Chained / Odd Function)`
-- Text (p. 58): "PT3 is a superset of PT2 that contains the Set Extended Text Color (SEC)
-  control sequence for supporting spot colors and process colors in text."
+- Text (p. 58, paraphrased): PT3 extends PT2 with the SEC sequence to support spot and process colors in text.
 - Alphabetical index (p. ~190): `SEC 80(81) — Set Extended Text Color`.
 
 ## 3. Other primary sources
@@ -87,8 +87,7 @@ bytes, `COLSIZE1`–`4`, then `COLVALUE` (1–4 components per the color space).
 
 ## 5. The chained bit
 
-Per the AFPC Programming Guide (p. 58): each control sequence "can be coded as unchained
-(even-numbered functions) or chained (odd-numbered functions)." The chain bit is the
+Per the AFPC Programming Guide (p. 58): a control sequence may be unchained (even function number) or chained (odd function number). The chain bit is the
 **low-order bit of the function-type byte**. Chained sequences "immediately follow the
 previous one with no intervening X'2BD3' escape sequence"; "the last control sequence in a
 chain must have the even-numbered (unchained) format to signal the end of the chain."

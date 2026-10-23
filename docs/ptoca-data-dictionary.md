@@ -28,8 +28,8 @@ for the 19 original sequences; `docs/_evidence/ptoca-0x80-research.md` for SEC.
 | F6 | STO — Set Text Orientation | text orientation / rotation | yes | applied to state |
 | DA | TRN — Transparent Data | literal text bytes follow | no (immediate) | decoded as text |
 | EE | RPS — Repeat String | repeat character/string | no (immediate) | expanded to text |
-| E4 | DIR — Draw I-Axis Rule | inline-axis rule | no (immediate) | rule run |
-| E6 | DBR — Draw B-Axis Rule | baseline-axis rule | no (immediate) | rule run |
+| E4 | DIR — Draw I-Axis Rule | inline-axis rule | no (immediate) | length-validated only; no run emitted |
+| E6 | DBR — Draw B-Axis Rule | baseline-axis rule | no (immediate) | length-validated only; no run emitted |
 | D8 | BLN — Begin Line Next | advance to next line | no (immediate) | applied to position |
 | F8 | NOP — No Operation | no operation | n/a | ignored |
 
