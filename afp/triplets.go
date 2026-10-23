@@ -187,6 +187,12 @@ func (t Triplet) Text() string {
 // It works for both naked and 5A-wrapped streams because Fields
 // normalizes framing before comparison, and it streams: fields are
 // decoded as they arrive rather than after the whole input materializes.
+//
+// The comparison is per logical field, not per wire byte: Fields
+// reassembles SegFlag-segmented fragments and DecodeField strips SFI
+// padding, so fragment boundaries and padding are normalized away before
+// the gate runs. RoundTrip verifies decode/encode fidelity of the logical
+// fields, not reproducibility of the original wire bytes.
 func RoundTrip(r io.Reader) error {
 	i := 0
 	for sf, err := range Fields(r) {
