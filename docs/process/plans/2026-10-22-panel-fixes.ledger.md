@@ -1,6 +1,6 @@
 # Panel fixes ledger — 2026-10-22
 
-Fix wave for the paperthin lens panel (hate/feynman/macrothink/prism) verdict
+Fix wave for the adversarial review panel verdict
 PROCEED-WITH-FIXES on PR #20 @ 76296ca. All fixes TDD; behavior changes get a
 failing test first.
 

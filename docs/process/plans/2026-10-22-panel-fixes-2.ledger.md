@@ -1,6 +1,6 @@
 # Rulings ledger — panel fix wave 2 (PR #20, MCF fixes A/B/C)
 
-Date: 2026-10-22. Branch: `feat/sec-ptoca-0x80`. Implementer record of every
+Date: 2026-10-22. Branch: `feat/sec-ptoca-0x80`. Record of every
 judgment call made during implementation.
 
 - Ruling: Moved the MCF placement in the `mcfDocFields`/`mcfReduceStream` fixtures from BDT→MCF→BPG to BDT→BPG→MCF→BPT, and wrote `mcfTwoPageDoc` with MCF after BPG on each page — the task's own two-page fixture puts the MCF inside the page, and under Fix A's BPG reset an MCF before BPG would be dead on arrival, making every single-page fixture a vacuous pass. — Why: the panel ruling is "MCF is page-scoped via the Active Environment Group"; the reducer accepts MCF anywhere inside the document, so the after-BPG position is the meaningful one to pin. — Cost if wrong: the fixtures pin an MCF position the wire census doesn't require; accepted because the reducer's acceptance is position-agnostic and the behavior under test is the page-scoped reset.

@@ -116,11 +116,11 @@ entry.
 Known limitation (v1): the page accumulator does not distinguish the page's
 Active Environment Group from an Object Environment Group (OEG) — an MCF
 carried inside an OEG would fold into the page's namespace. The reducer has
-no OEG (BOG/EOG) boundary tracking, and no input in the contracted subset
-can trigger this today (the IOB object path is excluded, so object data
-never reaches the MCF parser). Scoping merges per environment group needs
-its own design; until then this stays a documented limitation, not a
-silent behavior.
+no OEG (BOG/EOG) boundary tracking. Triggering this requires OEG-wrapped MCF
+input, which sits outside the contracted object model (every object type is
+excluded under §9), so no in-subset input reaches it. Scoping merges per
+environment group needs its own design; until then this stays a documented
+limitation, not a silent behavior.
 
 The pinned table is the only autonomous font source: `FIX-MONO-10`
 (synthetic monospace, every glyph 600/1000 em) and `FIX-PROP-10` (synthetic

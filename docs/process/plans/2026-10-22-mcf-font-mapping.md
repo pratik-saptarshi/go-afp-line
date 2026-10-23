@@ -64,7 +64,7 @@ Why a parser instead of presence-only tracking: the LID→name map is the load-b
   - `TestParseMCFMapping_Empty`: empty data → zero mapping, nil error.
 - [ ] **Step 2: Run tests to verify they fail**
 
-  Run: `go test ./afp/ -run TestParseMCFMapping -v` (from the worktree root, `PATH` including `$HOME/sdk/go/bin:$HOME/go/bin`)
+  Run: `go test ./afp/ -run TestParseMCFMapping -v` (from the worktree root, with the Go toolchain on `PATH`)
   Expected: FAIL with "undefined: ParseMCFMapping"
 
 - [ ] **Step 3: Implement** `MCFMapping` and `ParseMCFMapping` in `afp/mcf.go` per the interface above.
