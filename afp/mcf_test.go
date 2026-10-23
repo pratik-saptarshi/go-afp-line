@@ -3,7 +3,6 @@ package afp
 import (
 	"errors"
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -99,8 +98,8 @@ func TestParseMCFMapping_DuplicateLID(t *testing.T) {
 		)
 		_, err := ParseMCFMapping(data)
 		derr := assertDecodeKindStructure(t, err, "duplicate LID in ByLID")
-		if !strings.Contains(derr.Reason, "duplicate MCF local font ID 1") {
-			t.Errorf("reason %q does not name the duplicate LID", derr.Reason)
+		if derr.Reason != "duplicate MCF local font ID 1" {
+			t.Errorf("reason: got %q, want %q", derr.Reason, "duplicate MCF local font ID 1")
 		}
 	})
 	t.Run("mapped then unsupported", func(t *testing.T) {
@@ -110,8 +109,8 @@ func TestParseMCFMapping_DuplicateLID(t *testing.T) {
 		)
 		_, err := ParseMCFMapping(data)
 		derr := assertDecodeKindStructure(t, err, "duplicate LID across ByLID/Unsupported")
-		if !strings.Contains(derr.Reason, "duplicate MCF local font ID 3") {
-			t.Errorf("reason %q does not name the duplicate LID", derr.Reason)
+		if derr.Reason != "duplicate MCF local font ID 3" {
+			t.Errorf("reason: got %q, want %q", derr.Reason, "duplicate MCF local font ID 3")
 		}
 	})
 }
@@ -142,6 +141,53 @@ func TestParseMCFMapping_Truncated(t *testing.T) {
 	data := []byte{0x00, 0x15, 0x04, 0x24, 0x05, 0x01, 0x0F, 0x02, 0x8E, 0x00, 0xC6, 0xC9}
 	_, err := ParseMCFMapping(data)
 	assertDecodeKindStructure(t, err, "RGLength overrunning data")
+}
+
+func TestParseMCFMapping_DuplicateUnsupported(t *testing.T) {
+	// Two X'84' groups with the same LID: a repeat within Unsupported is
+	// rejected fail-closed, like any other duplicate LID.
+	data := append(
+		mcfGroup(tripletX24(0x05, 0x03), tripletX02(0x84, fixMono10)),
+		mcfGroup(tripletX24(0x05, 0x03), tripletX02(0x84, fixProp10))...,
+	)
+	_, err := ParseMCFMapping(data)
+	derr := assertDecodeKindStructure(t, err, "duplicate LID within Unsupported")
+	if derr.Reason != "duplicate MCF local font ID 3" {
+		t.Errorf("reason: got %q, want %q", derr.Reason, "duplicate MCF local font ID 3")
+	}
+}
+
+func TestParseMCFMapping_TruncatedHeader(t *testing.T) {
+	t.Run("single byte", func(t *testing.T) {
+		// A single trailing byte cannot hold a 2-byte repeating-group
+		// header.
+		data := []byte{0x00}
+		_, err := ParseMCFMapping(data)
+		assertDecodeKindStructure(t, err, "truncated repeating-group header")
+	})
+	t.Run("after empty group", func(t *testing.T) {
+		// One empty group (RGLength=2), then a dangling byte: the header
+		// check must fire on later iterations too.
+		data := append(mcfGroup(), 0x00)
+		_, err := ParseMCFMapping(data)
+		assertDecodeKindStructure(t, err, "truncated repeating-group header")
+	})
+}
+
+func TestParseMCFMapping_EmptyGroup(t *testing.T) {
+	// RGLength=2: an empty group carries no X'24', so the architected
+	// default LID 0x00 must not be recorded as Unsupported.
+	data := mcfGroup()
+	m, err := ParseMCFMapping(data)
+	if err != nil {
+		t.Fatalf("ParseMCFMapping: unexpected error: %v", err)
+	}
+	if len(m.ByLID) != 0 {
+		t.Errorf("ByLID: got %v, want empty", m.ByLID)
+	}
+	if len(m.Unsupported) != 0 {
+		t.Errorf("Unsupported: got %v, want empty (X'24'-less empty group)", m.Unsupported)
+	}
 }
 
 func TestParseMCFMapping_Empty(t *testing.T) {

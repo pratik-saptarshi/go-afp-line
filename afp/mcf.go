@@ -36,12 +36,13 @@ const (
 //
 // Each group starts with a 2-byte big-endian RGLength (inclusive of itself)
 // followed by a run of MO:DCA triplets. RGLength bounds violations, malformed
-// X'24'/X'02' triplets, duplicate LIDs, and unexpected ResType/FQN types are
-// DecodeError{Kind: KindStructure} — this parser never guesses. A group
-// without an X'24' triplet uses LID 0x00 (the architected default, applied
-// per group); a group with an X'24' but no X'8E' FQN is recorded in
-// Unsupported. Empty input yields a zero MCFMapping with non-nil empty
-// collections and no error.
+// X'24'/X'02' triplets, duplicate LIDs, and unexpected ResType values are
+// DecodeError{Kind: KindStructure} — this parser never guesses. An unexpected
+// FQNType (anything but X'8E') is not an error: the group simply carries no
+// coded-font name. A group without an X'24' triplet uses LID 0x00 (the
+// architected default, applied per group); only a group carrying an X'24' but
+// no X'8E' FQN is recorded in Unsupported. Empty input yields a zero
+// MCFMapping with non-nil empty collections and no error.
 func ParseMCFMapping(data []byte) (MCFMapping, error) {
 	m := MCFMapping{ByLID: map[byte]string{}, Unsupported: []byte{}}
 	seen := map[byte]bool{}
@@ -71,7 +72,7 @@ func ParseMCFMapping(data []byte) (MCFMapping, error) {
 			}
 			return MCFMapping{}, err
 		}
-		lid, name, hasName, err := parseMCFGroup(triplets, pos+2)
+		lid, name, hasName, hasX24, err := parseMCFGroup(triplets, pos+2)
 		if err != nil {
 			return MCFMapping{}, err
 		}
@@ -79,13 +80,16 @@ func ParseMCFMapping(data []byte) (MCFMapping, error) {
 			return MCFMapping{}, DecodeError{
 				Offset: pos + 2,
 				Kind:   KindStructure,
-				Reason: fmt.Sprintf("MCF: duplicate MCF local font ID %d", lid),
+				Reason: fmt.Sprintf("duplicate MCF local font ID %d", lid),
 			}
 		}
 		seen[lid] = true
 		if hasName {
 			m.ByLID[lid] = name
-		} else {
+		} else if hasX24 {
+			// A nameless group without an X'24' carries no LID of its
+			// own (it only borrows the architected default), so it is
+			// not recorded as Unsupported.
 			m.Unsupported = append(m.Unsupported, lid)
 		}
 		pos += rgLen
@@ -94,11 +98,12 @@ func ParseMCFMapping(data []byte) (MCFMapping, error) {
 }
 
 // parseMCFGroup interprets one repeating group's triplets. It returns the
-// group's local font ID (0x00 when no X'24' triplet is present) and, when the
-// group carries an X'8E' coded-font name FQN, the decoded name with hasName
-// set. base is the group's byte offset within the field data, used to
+// group's local font ID (0x00 when no X'24' triplet is present), hasX24
+// reporting whether an X'24' triplet was present, and, when the group
+// carries an X'8E' coded-font name FQN, the decoded name with hasName set.
+// base is the group's byte offset within the field data, used to
 // re-base error offsets.
-func parseMCFGroup(triplets Triplets, base int) (lid byte, name string, hasName bool, err error) {
+func parseMCFGroup(triplets Triplets, base int) (lid byte, name string, hasName, hasX24 bool, err error) {
 	var seenX24, seenX02 bool
 	toff := 0 // running triplet offset within the group body
 	for _, tr := range triplets {
@@ -107,7 +112,7 @@ func parseMCFGroup(triplets Triplets, base int) (lid byte, name string, hasName 
 		switch tr.ID {
 		case mcfTripletResourceLocalID:
 			if seenX24 {
-				return 0, "", false, DecodeError{
+				return 0, "", false, false, DecodeError{
 					Offset: off,
 					Kind:   KindStructure,
 					Reason: "MCF: duplicate X'24' triplet in one repeating group",
@@ -115,7 +120,7 @@ func parseMCFGroup(triplets Triplets, base int) (lid byte, name string, hasName 
 			}
 			seenX24 = true
 			if len(tr.Data) != 2 || tr.Data[0] != mcfResTypeFont {
-				return 0, "", false, DecodeError{
+				return 0, "", false, false, DecodeError{
 					Offset: off,
 					Kind:   KindStructure,
 					Reason: fmt.Sprintf("MCF: X'24' needs ResType X'05' plus one LID byte, have %d data bytes starting X'%02X'",
@@ -125,7 +130,7 @@ func parseMCFGroup(triplets Triplets, base int) (lid byte, name string, hasName 
 			lid = tr.Data[1]
 		case mcfTripletFQN:
 			if seenX02 {
-				return 0, "", false, DecodeError{
+				return 0, "", false, false, DecodeError{
 					Offset: off,
 					Kind:   KindStructure,
 					Reason: "MCF: duplicate X'02' triplet in one repeating group",
@@ -133,7 +138,7 @@ func parseMCFGroup(triplets Triplets, base int) (lid byte, name string, hasName 
 			}
 			seenX02 = true
 			if len(tr.Data) < 2 {
-				return 0, "", false, DecodeError{
+				return 0, "", false, false, DecodeError{
 					Offset: off,
 					Kind:   KindStructure,
 					Reason: fmt.Sprintf("MCF: X'02' needs FQNType/FQNFmt (2 bytes), have %d data bytes", len(tr.Data)),
@@ -145,7 +150,7 @@ func parseMCFGroup(triplets Triplets, base int) (lid byte, name string, hasName 
 			}
 		}
 	}
-	return lid, name, hasName, nil
+	return lid, name, hasName, seenX24, nil
 }
 
 // firstByte returns the first byte of b, or 0 for an empty slice. It exists
