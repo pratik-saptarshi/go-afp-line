@@ -646,5 +646,8 @@ func (st *reduceState) finish() error {
 	if st.inDoc {
 		return st.fail("", afp.KindStructure, "end of stream with open document: missing EDT")
 	}
+	if st.inOEG {
+		return st.fail("", afp.KindStructure, "end of stream with unclosed OEG: BOG without EOG")
+	}
 	return nil
 }

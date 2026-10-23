@@ -407,3 +407,28 @@ func TestReduce_UnclosedBOGAbortsAtEDT(t *testing.T) {
 		t.Errorf("error kind = %q, want %q", derr.Kind, afp.KindStructure)
 	}
 }
+
+// A BOG after the document closes must abort at end-of-stream, not
+// succeed silently: BDT, EDT, BOG, EOF leaves inOEG set with no
+// boundary to catch it.
+func TestReduce_UnclosedBOGAbortsAtEOF(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bog := rawField(tBOG, nil)
+
+	var buf bytes.Buffer
+	for _, f := range [][]byte{bdt, edt, bog} {
+		buf.Write(f)
+	}
+	_, _, err := Reduce(&buf)
+	if err == nil {
+		t.Fatalf("Reduce: expected unclosed-OEG error at EOF, got nil")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("Reduce: expected DecodeError, got %T: %v", err, err)
+	}
+	if derr.Kind != afp.KindStructure {
+		t.Errorf("error kind = %q, want %q", derr.Kind, afp.KindStructure)
+	}
+}
