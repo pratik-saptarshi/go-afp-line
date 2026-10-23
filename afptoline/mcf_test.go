@@ -197,6 +197,28 @@ func TestReduce_MCFMergeDisjointLIDs(t *testing.T) {
 	}
 }
 
+// TestReduce_MCFMergeFirstFieldLIDResolves: two MCF fields in one page carry
+// mappings for disjoint LIDs, and the PTX selects the FIRST field's LID.
+// This is the merge pin: under the old replace semantics the first field's
+// map is discarded when the second MCF arrives, so SCFL LID 1 fails loudly
+// ("SCFL local font ID 1 has no MCF mapping"); with the merge it resolves
+// through the first field's surviving entry.
+func TestReduce_MCFMergeFirstFieldLIDResolves(t *testing.T) {
+	first := mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x8E, mcfFixMono10))
+	second := mcfGroup(tripletX24(0x05, 0x02), tripletX02(0x8E, mcfFixProp10))
+	doc, _, err := Reduce(bytes.NewReader(mcfDocFields([][]byte{first, second}, 0x01)))
+	if err != nil {
+		t.Fatalf("Reduce: %v", err)
+	}
+	runs := doc.Pages[0].Runs
+	if len(runs) != 1 {
+		t.Fatalf("got %d runs, want 1", len(runs))
+	}
+	if runs[0].FontID != "FIX-MONO-10" {
+		t.Errorf("FontID = %q, want %q (merged in from the first MCF)", runs[0].FontID, "FIX-MONO-10")
+	}
+}
+
 // TestReduce_MCFDuplicateLIDAcrossFields: two MCF fields in one page map the
 // same LID — the uniform duplicate rule applies across fields as within a
 // field: a loud KindStructure abort naming the LID. A keep-first

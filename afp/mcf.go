@@ -47,7 +47,9 @@ const (
 // with a non-character-string FQNFmt (anything but X'00'), is not an error:
 // the group simply carries no coded-font name. A group without an X'24' triplet
 // uses LID 0x00 (the architected default, applied per group); only a group
-// carrying an X'24' but no X'8E' FQN is recorded in Unsupported. Empty input
+// carrying an X'24' but contributing no usable coded-font name — no X'8E'
+// FQN at all, or an X'8E' whose FQNFmt is not a character string — is
+// recorded in Unsupported. Empty input
 // yields a zero MCFMapping with non-nil empty collections and no error.
 func ParseMCFMapping(data []byte) (MCFMapping, error) {
 	m := MCFMapping{ByLID: map[byte]string{}, Unsupported: []byte{}}

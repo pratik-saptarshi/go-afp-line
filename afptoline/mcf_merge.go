@@ -2,6 +2,7 @@ package afptoline
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 
 	"github.com/pratik-saptarshi/go-afp-line/afp"
@@ -14,16 +15,18 @@ import (
 // unique identifier (MO:DCA Resource Local Identifier triplet, p. 368), and
 // v1 applies the uniform duplicate rule from afp.ParseMCFMapping across
 // fields, rejecting the MO:DCA p. 232 double-byte font exception (v1 does
-// not implement double-byte fonts). Fresh LIDs are added: names into
-// ByLID, unsupported LIDs appended to Unsupported in incoming order, so
-// group order is preserved across the merge. offset and fieldID attribute
-// the error to the MCF field under visit.
+// not implement double-byte fonts). Fresh LIDs are added in ascending LID
+// order — map iteration is nondeterministic, and with several simultaneous
+// accumulated-map collisions the reported LID must not vary run to run.
+// Names go into ByLID, unsupported LIDs appended to Unsupported in incoming
+// order, so group order is preserved across the merge. offset and fieldID
+// attribute the error to the MCF field under visit.
 func mergeMCFMappings(acc *afp.MCFMapping, incoming afp.MCFMapping, offset int, fieldID string) error {
-	for lid, name := range incoming.ByLID {
+	for _, lid := range slices.Sorted(maps.Keys(incoming.ByLID)) {
 		if err := mergeMCFCheck(acc, lid, offset, fieldID); err != nil {
 			return err
 		}
-		acc.ByLID[lid] = name
+		acc.ByLID[lid] = incoming.ByLID[lid]
 	}
 	for _, lid := range incoming.Unsupported {
 		if err := mergeMCFCheck(acc, lid, offset, fieldID); err != nil {
