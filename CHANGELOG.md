@@ -6,7 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Added- PTOCA SEC (Set Extended Text Color, 0x80/0x81): registered and recorded without applying, mirroring STC — IBM's sanctioned fallback for unhandled color is the device default (PTOCA Reference SC31-6803-02, pp. 79–80). LENGTH outside 14–16 is a loud error. Evidence: docs/_evidence/ptoca-0x80-research.md.
+### Added
+
+- PTOCA SEC (Set Extended Text Color, 0x80/0x81): registered and recorded without applying, mirroring STC — IBM's sanctioned fallback for unhandled color is the device default (PTOCA Reference SC31-6803-02, pp. 79–80). LENGTH outside 14–16 is a loud error. Evidence: docs/_evidence/ptoca-0x80-research.md.
 - New PTOCA data dictionary (docs/ptoca-data-dictionary.md): the 20 known function-type mappings with sources and handling.
 - Registered 7 structural SFIDs (BPF/EPF, BRS/ERS, PGD, MDR, IOB) as contracted passthrough with IBM-primary source citations. IOB decodes as excluded rather than contracted per the profile-usage check: the profile file's IOB includes an object container whose OCD payload is JPEG image data.
 - Opt-in lenient decode mode: new `afp.DecodeFieldLenient` decodes an unregistered SFID as an excluded `*RawField` instead of aborting (preflight-style diagnostics); `DecodeField` keeps its fail-fast default and framing validation is unchanged in both modes (contract §9).
