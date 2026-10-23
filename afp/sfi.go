@@ -180,12 +180,181 @@ type StreamField struct {
 // exactly like SplitFields, and yields the same fields with the same wire
 // offsets and the same error contract (Kind/Reason/Offset per field).
 //
+// Unlike SplitFields, Fields reassembles segmented fields: consecutive
+// fields carrying the SFI segmentation flag (bit 2) form one continuous
+// parameter string and are yielded as one logical field whose introducer
+// is the first fragment's with the segmentation and padding flags cleared. A different-type field between the fragments, or
+// a stream that ends before the flag-clear terminator, is a loud
+// KindStructure error — the architecture forbids any other field between
+// the segmented fields. See reassembleSegmented.
+//
 // The sequence is single-use: it reads from r as it is iterated, so
 // iterating it twice is undefined. If the consumer stops early (break or
 // return), the iterator stops reading promptly and holds no resources:
 // there are no goroutines or channels, so nothing can leak.
 func Fields(r io.Reader) iter.Seq2[StreamField, error] {
-	return fieldsOp(r, "Fields")
+	return reassembleSegmented(fieldsOp(r, "Fields"))
+}
+
+// reassembleSegmented wraps a physical-field iterator (the fieldsOp core)
+// and merges SegFlag-marked fragments into single logical fields. Fields
+// without the segmentation flag pass through untouched, byte for byte —
+// the wrapper is transparent to non-segmented streams.
+//
+// When the segmentation flag (SFI bit 2) is set, the fragments form one
+// continuous parameter string: the flag may split the data at
+// any byte boundary, no other structured field may appear between the
+// fragments, and the last field of the sequence must have the flag clear
+// (MO:DCA Reference, "Structured Field Segmentation"). Each fragment's
+// data portion is padding-stripped with that fragment's own introducer
+// before concatenation — fragments are physical fields, and padding is a
+// physical-field property.
+//
+// The synthetic logical field is built from the FIRST fragment's
+// introducer (extension bytes preserved verbatim) with the segmentation
+// and padding flags cleared — the logical field is complete and
+// padding-free — and Length recomputed as headerLength + concatenated
+// data length, serialized with the existing Introducer.Encode helper.
+// Offset is the first fragment's wire offset.
+//
+// Fail-closed: a different-type field while a sequence is open, a stream
+// that ends (clean EOF or any error) before the flag-clear terminator, or
+// a reassembled length above the MO:DCA maximum each yield a loud
+// KindStructure DecodeError; a partial sequence is never yielded.
+func reassembleSegmented(inner iter.Seq2[StreamField, error]) iter.Seq2[StreamField, error] {
+	return func(yield func(StreamField, error) bool) {
+		var (
+			inSeq   bool       // a segmented sequence is open
+			seqIn   Introducer // first fragment's introducer
+			seqOff  int        // wire offset of the first fragment
+			seqData []byte     // concatenated padding-stripped data
+		)
+		// truncated reports the open sequence dying before its
+		// flag-clear terminator. Any stream end qualifies — clean EOF
+		// or a read error: no consumer can use a half-reassembled
+		// field, so the sequence-invariant violation is the error.
+		truncated := func() (StreamField, error) {
+			return StreamField{}, DecodeError{
+				Kind:    KindStructure,
+				FieldID: seqIn.TypeIDString(),
+				Offset:  seqOff,
+				Reason:  "truncated segmented field: stream ended before the SegFlag-clear terminator",
+			}
+		}
+		fail := func(sf StreamField, err error) bool {
+			return yield(sf, err)
+		}
+		for sf, err := range inner {
+			if err != nil {
+				if inSeq {
+					if !fail(truncated()) {
+						return
+					}
+					return
+				}
+				if !fail(StreamField{}, err) {
+					return
+				}
+				return
+			}
+			in, derr := decodeIntroducer(sf.Data)
+			if derr != nil {
+				// Unreachable: fieldsOp validated the introducer before
+				// yielding. Fail closed rather than reassemble on a
+				// contradiction.
+				if !fail(StreamField{}, derr) {
+					return
+				}
+				return
+			}
+			switch {
+			case !inSeq && !in.IsSegmented():
+				// Ordinary field: byte-identical passthrough.
+				if !fail(sf, nil) {
+					return
+				}
+			case in.IsSegmented():
+				// Start or continue the sequence. A SegFlag fragment of
+				// a different type cannot continue it: no other field
+				// may appear between the segmented fields.
+				if inSeq && in.TypeID != seqIn.TypeID {
+					if !fail(StreamField{}, DecodeError{
+						Kind:    KindStructure,
+						FieldID: in.TypeIDString(),
+						Offset:  sf.Offset,
+						Reason: fmt.Sprintf("interspersed field in segmented sequence of field %s",
+							seqIn.TypeIDString()),
+					}) {
+						return
+					}
+					return
+				}
+				if !inSeq {
+					seqIn, seqOff = in, sf.Offset
+					inSeq = true
+				}
+				frag, serr := stripFieldPadding(sf.Data[in.HeaderLength():], in)
+				if serr != nil {
+					if !fail(StreamField{}, serr) {
+						return
+					}
+					return
+				}
+				seqData = append(seqData, frag...)
+			default:
+				// Flag-clear field while a sequence is open: it must be
+				// the same-type terminator. Anything else is
+				// interspersed.
+				if in.TypeID != seqIn.TypeID {
+					if !fail(StreamField{}, DecodeError{
+						Kind:    KindStructure,
+						FieldID: in.TypeIDString(),
+						Offset:  sf.Offset,
+						Reason: fmt.Sprintf("interspersed field in segmented sequence of field %s",
+							seqIn.TypeIDString()),
+					}) {
+						return
+					}
+					return
+				}
+				frag, serr := stripFieldPadding(sf.Data[in.HeaderLength():], in)
+				if serr != nil {
+					if !fail(StreamField{}, serr) {
+						return
+					}
+					return
+				}
+				seqData = append(seqData, frag...)
+				// The logical field is complete and padding-free: clear
+				// both flags on the first fragment's introducer and
+				// recompute the length over the concatenated data.
+				lin := seqIn
+				lin.Flags &^= flagSeg | flagPad
+				lin.Length = lin.HeaderLength() + len(seqData)
+				if lin.Length > maxSFLength {
+					if !fail(StreamField{}, DecodeError{
+						Kind:    KindStructure,
+						FieldID: lin.TypeIDString(),
+						Offset:  seqOff,
+						Reason: fmt.Sprintf("reassembled segmented field length %d exceeds MO:DCA maximum %d",
+							lin.Length, maxSFLength),
+					}) {
+						return
+					}
+					return
+				}
+				logical := append(lin.Encode(), seqData...)
+				inSeq, seqData = false, nil
+				if !fail(StreamField{Data: logical, Offset: seqOff}, nil) {
+					return
+				}
+			}
+		}
+		if inSeq {
+			// Clean EOF with the sequence still open.
+			fail(truncated())
+		}
+	}
 }
 
 // pendingErrReader wraps an io.Reader so a non-EOF error returned alongside
@@ -398,10 +567,14 @@ func readPrefix(r io.Reader) ([]byte, error) {
 // the field. Every field is validated with decodeIntroducer before its
 // bytes are copied, and no allocation is sized by an unvalidated claim.
 //
-// SplitFields is a thin collecting wrapper over the streaming Fields
-// iterator, so it keeps this exact contract — including the
-// "afp: SplitFields: %w" read-error text. On huge inputs it materializes
-// every field; Fields is the streaming path.
+// SplitFields is a thin collecting wrapper over fieldsOp, the shared
+// iterator core — it is deliberately NOT built on Fields: SplitFields
+// yields physical fields exactly as framed on the wire, while Fields
+// reassembles SegFlag-segmented sequences into logical fields. This
+// physical-fragment contract is pinned by TestSplitFields_YieldsPhysicalFragments.
+// On huge inputs it materializes every field; Fields is the streaming
+// path. The "afp: SplitFields: %w" read-error text is preserved via the
+// op name passed to fieldsOp.
 func SplitFields(r io.Reader) ([][]byte, error) {
 	var fields [][]byte
 	for f, err := range fieldsOp(r, "SplitFields") {
