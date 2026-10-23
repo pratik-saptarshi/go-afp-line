@@ -82,7 +82,7 @@ func TestReduce_BOGInsideOpenPage(t *testing.T) {
 // behavior in the new document: two MCFs mapping the same LID must hit the
 // uniform duplicate-LID abort (proving inOEG was cleared at the second
 // BDT; if it leaked, the MCFs would be scope-discarded instead of merged).
-// The MCFs sit between the second BDT and the first BPG on purpose: no BPG
+// The MCFs sit between the second BDT and any BPG on purpose: no BPG
 // intervenes, so the abort can only prove the BDT reset — the BPG reset
 // cannot mask a missing BDT reset here.
 func TestReduce_BDTClearsOpenOEG(t *testing.T) {
