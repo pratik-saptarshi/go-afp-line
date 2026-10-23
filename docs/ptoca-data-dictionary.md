@@ -24,8 +24,8 @@ for the 19 original sequences; `docs/_evidence/ptoca-0x80-research.md` for SEC.
 | 80 | SEC — Set Extended Text Color | extended color (RGB/CMYK/CIELAB/highlight/OCA) | yes | recorded, not applied |
 | F2 | BSU — Begin Suppression | begin suppressed text block | yes (scoped) | gated text accumulation |
 | F4 | ESU — End Suppression | end suppressed text block | yes (scoped) | gated text accumulation |
-| F0 | SCFL — Set Coded Font Local | font switch by local ID | yes | applied (LID 0 default; other LIDs are a loud error — v1 never guesses metrics) |
-| F6 | STO — Set Text Orientation | text orientation / rotation | yes | applied to state |
+| F0 | SCFL — Set Coded Font Local | font switch by local ID | yes | decoder records LID (surfaced as Run.FontID); Reduce rejects non-zero LIDs without a pinned metrics mapping (loud error — v1 never guesses metrics) |
+| F6 | STO — Set Text Orientation | text orientation / rotation | yes | tracked, not applied (orientation recorded in state; not carried into runs) |
 | DA | TRN — Transparent Data | literal text bytes follow | no (immediate) | decoded as text |
 | EE | RPS — Repeat String | repeat character/string | no (immediate) | expanded to text |
 | E4 | DIR — Draw I-Axis Rule | inline-axis rule | no (immediate) | length-validated only; no run emitted |
