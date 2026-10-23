@@ -213,29 +213,21 @@ func TestParseMCFMapping_TruncatedHeader(t *testing.T) {
 		_, err := ParseMCFMapping(data)
 		assertDecodeKindStructure(t, err, "truncated repeating-group header")
 	})
-	t.Run("after empty group", func(t *testing.T) {
-		// One empty group (RGLength=2), then a dangling byte: the header
-		// check must fire on later iterations too.
-		data := append(mcfGroup(), 0x00)
+	t.Run("after valid group", func(t *testing.T) {
+		// One valid group, then a dangling byte: the header check must
+		// fire on later iterations too.
+		data := append(mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x8E, fixMono10)), 0x00)
 		_, err := ParseMCFMapping(data)
 		assertDecodeKindStructure(t, err, "truncated repeating-group header")
 	})
 }
 
 func TestParseMCFMapping_EmptyGroup(t *testing.T) {
-	// RGLength=2: an empty group carries no X'24', so the architected
-	// default LID 0x00 must not be recorded as Unsupported.
+	// RGLength=2 is below the MO:DCA minimum of 7 (MCF syntax, p. 229):
+	// an empty group is malformed, not a default-LID group.
 	data := mcfGroup()
-	m, err := ParseMCFMapping(data)
-	if err != nil {
-		t.Fatalf("ParseMCFMapping: unexpected error: %v", err)
-	}
-	if len(m.ByLID) != 0 {
-		t.Errorf("ByLID: got %v, want empty", m.ByLID)
-	}
-	if len(m.Unsupported) != 0 {
-		t.Errorf("Unsupported: got %v, want empty (X'24'-less empty group)", m.Unsupported)
-	}
+	_, err := ParseMCFMapping(data)
+	assertDecodeKindStructure(t, err, "RGLength 2 empty group")
 }
 
 func TestParseMCFMapping_Empty(t *testing.T) {
@@ -313,4 +305,25 @@ func TestParseMCFMapping_TwoDefaultGroupsDuplicate(t *testing.T) {
 	if derr.Reason != want {
 		t.Errorf("Reason: got %q, want %q", derr.Reason, want)
 	}
+}
+
+// MO:DCA (MCF syntax, p. 229) defines RGLength range as 7–(n+1). A group
+// with RGLength 6 is malformed — it is not a default-LID group.
+func TestParseMCFMapping_RejectsShortRGLength(t *testing.T) {
+	data := []byte{0x00, 0x06, 0x04, 0x24, 0x05, 0x01}
+	_, err := ParseMCFMapping(data)
+	assertDecodeKindStructure(t, err, "RGLength 6")
+}
+
+// MO:DCA (MCF semantics) forbids X'84', the X'85'/X'86' pair, and X'8E' in
+// the same repeating group — they are mutually exclusive identification
+// forms. A group mixing X'8E' with X'85' is malformed.
+func TestParseMCFMapping_RejectsMixedFQNForms(t *testing.T) {
+	data := mcfGroup(
+		tripletX24(0x05, 0x01),
+		tripletX02(0x8E, fixMono10),
+		tripletX02(0x85, fixMono10),
+	)
+	_, err := ParseMCFMapping(data)
+	assertDecodeKindStructure(t, err, "X'8E'+X'85' mixed forms")
 }

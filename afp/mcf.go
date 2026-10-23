@@ -32,6 +32,9 @@ const (
 	mcfTripletResourceLocalID byte = 0x24 // Resource Local ID
 	mcfTripletFQN             byte = 0x02 // Fully Qualified Name
 	mcfResTypeFont            byte = 0x05 // Resource Local ID ResType: font
+	mcfFQNTypeCodedFontGRID   byte = 0x84 // FQNType: coded font GRID reference
+	mcfFQNTypeCodePageName    byte = 0x85 // FQNType: code page name reference
+	mcfFQNTypeCharsetName     byte = 0x86 // FQNType: font character set name reference
 	mcfFQNTypeCodedFontName   byte = 0x8E // FQNType: coded font name
 	mcfFQNFormatCharString    byte = 0x00 // FQNFmt: character string (MO:DCA FQN semantics)
 )
@@ -64,7 +67,9 @@ func ParseMCFMapping(data []byte) (MCFMapping, error) {
 			}
 		}
 		rgLen := int(binary.BigEndian.Uint16(data[pos : pos+2]))
-		if rgLen < 2 || pos+rgLen > len(data) {
+		// MO:DCA (MCF syntax) defines RGLength range as 7–(n+1): a shorter
+		// group is malformed, not a default-LID group.
+		if rgLen < 7 || pos+rgLen > len(data) {
 			return MCFMapping{}, DecodeError{
 				Offset: pos,
 				Kind:   KindStructure,
@@ -169,6 +174,21 @@ func parseMCFGroup(triplets Triplets, base int) (lid byte, name string, hasName,
 				name = decodeEBCDICName(tr.Data[2:])
 				hasName = true
 			}
+		}
+	}
+	// MO:DCA (MCF semantics): X'84', the X'85'/X'86' pair, and X'8E' are
+	// mutually exclusive font-identification forms — X'84' is not permitted
+	// with X'8E', X'85', or X'86', and X'8E' is not permitted with X'85' or
+	// X'86'. A group mixing them is malformed, not partially interpretable.
+	hasX84 := seenFQNType[mcfFQNTypeCodedFontGRID]
+	hasX85 := seenFQNType[mcfFQNTypeCodePageName]
+	hasX86 := seenFQNType[mcfFQNTypeCharsetName]
+	hasX8E := seenFQNType[mcfFQNTypeCodedFontName]
+	if (hasX84 && (hasX85 || hasX86 || hasX8E)) || (hasX8E && (hasX85 || hasX86)) {
+		return 0, "", false, false, DecodeError{
+			Offset: base,
+			Kind:   KindStructure,
+			Reason: "MCF: mutually exclusive FQN types in one repeating group (X'84', X'85'/X'86', X'8E')",
 		}
 	}
 	return lid, name, hasName, seenX24, nil

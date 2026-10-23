@@ -175,3 +175,25 @@ wave's implementation (not pre-existing scope):
   check was unreachable afterwards and was removed.
 - TDD: TestFields_SegmentedExceedingBoundAbortsEarly failed RED (got
   KindStructure, wanted KindBudget), green post-fix. Full suite green.
+
+## Follow-up 2: Codex review of 837b90b (2026-10-22 ~24:00 CDT)
+Three new threads, all verified against the MO:DCA Reference PDF and all
+real (spec-confirmed, not nits):
+- Ruling (RGLength): spec MCF Syntax p. 229 defines RGLength range as
+  7–(n+1). The parser's `rgLen < 2` accepted 2–6; an RGLength==2 empty group
+  was silently dropped as "default-LID". Changed to `rgLen < 7`. This
+  overrode the MCF wave's deliberate TestParseMCFMapping_EmptyGroup (which
+  expected acceptance) — the test contradicted the spec and was updated to
+  expect KindStructure, as was the "after empty group" subtest (now uses a
+  valid group to exercise the truncated-header check).
+- Ruling (FQN exclusivity): spec MCF Semantics forbids X'84' with X'8E',
+  X'85', or X'86', and X'8E' with X'85'/X'86' in one repeating group — the
+  three are mutually exclusive identification forms. parseMCFGroup now
+  validates the collected FQN-type combination (KindStructure on mixing).
+  Added mcfFQNTypeCodedFontGRID/CodePageName/CharsetName constants.
+- Ruling (RoundTrip): DecodeField strips padding (new behavior), so the
+  byte-identical gate failed on padded input. RoundTrip now normalizes the
+  input (strip padding, clear PadFlag, recompute length) before comparing —
+  the gate verifies decode/encode fidelity, not wire-byte preservation of
+  semantically-irrelevant padding.
+- TDD: all three new tests failed RED, green post-fix. Full suite green.

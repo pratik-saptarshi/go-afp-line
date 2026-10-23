@@ -292,3 +292,14 @@ func TestFields_SegmentedExceedingBoundAbortsEarly(t *testing.T) {
 		t.Errorf("error kind = %q, want %q (resource bound, not malformed input)", derr.Kind, KindBudget)
 	}
 }
+
+// RoundTrip normalizes SFI padding: a padded field decodes (padding
+// stripped, PadFlag cleared) and re-encodes to the padding-free canonical
+// form, so the fidelity gate compares against the normalized input rather
+// than failing on the padded wire bytes.
+func TestRoundTrip_PaddedFieldNormalizes(t *testing.T) {
+	field := paddedBGR(0x08, []byte{0xAA, 0xBB, 0x02}) // PadFlag, 2 pad bytes
+	if err := RoundTrip(bytes.NewReader(field)); err != nil {
+		t.Fatalf("RoundTrip(padded field): unexpected error: %v", err)
+	}
+}

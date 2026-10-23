@@ -198,7 +198,22 @@ func RoundTrip(r io.Reader) error {
 		if err != nil {
 			return fmt.Errorf("afp: RoundTrip: field %d: %w", i, err)
 		}
-		if enc := f.Encode(); !bytes.Equal(enc, fb) {
+		// DecodeField strips SFI padding and clears PadFlag, so a padded
+		// field re-encodes to its padding-free canonical form. Compare
+		// against the normalized input, not the padded wire bytes.
+		expect := fb
+		if in, derr := decodeIntroducer(fb); derr != nil {
+			return fmt.Errorf("afp: RoundTrip: field %d: %w", i, derr)
+		} else if in.HasPadding() {
+			data, serr := stripFieldPadding(fb[in.HeaderLength():], in)
+			if serr != nil {
+				return fmt.Errorf("afp: RoundTrip: field %d: %w", i, serr)
+			}
+			in.Flags &^= flagPad
+			in.Length = in.HeaderLength() + len(data)
+			expect = append(in.Encode(), data...)
+		}
+		if enc := f.Encode(); !bytes.Equal(enc, expect) {
 			return DecodeError{
 				FieldID: f.TypeID(),
 				Offset:  i,
