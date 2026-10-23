@@ -153,8 +153,10 @@ Review Focus.
 
 ## 8. Font / code-page resolution story
 
-- MCF (Map Coded Font) maps coded-font local IDs → (GCSGID, CPGID) pairs; SCFL
-  switches the active coded font inside PTOCA.
+- MCF (Map Coded Font) is parsed to an LID→coded-font-name mapping
+  (`afp.ParseMCFMapping`); SCFL local IDs resolve through it against the pinned
+  synthetic metrics table. See `docs/ptoca-data-dictionary.md` § "Font mapping
+  (MCF / SCFL)".
 - v1 uses a **pinned synthetic metrics table** for fixture fonts (declared in fixtures);
   Task 6 tests assert placed width matches the table.
 - **FOCA font resources are excluded** (BCF/ECF, BFN/EFN, BCP/ECP, CFC, CFI, CPC, CPD,

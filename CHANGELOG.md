@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - New PTOCA data dictionary (docs/ptoca-data-dictionary.md): the 20 known function-type mappings with sources and handling.
 - Registered 7 structural SFIDs (BPF/EPF, BRS/ERS, PGD, MDR, IOB) as contracted passthrough with IBM-primary source citations. IOB decodes as excluded rather than contracted per the profile-usage check: the profile file's IOB includes an object container whose OCD payload is JPEG image data.
 - Opt-in lenient decode mode: new `afp.DecodeFieldLenient` decodes an unregistered SFID as an excluded `*RawField` instead of aborting (preflight-style diagnostics); `DecodeField` keeps its fail-fast default and framing validation is unchanged in both modes (contract §9).
+- MCF font mapping: new `afp.ParseMCFMapping` parses MCF repeating groups into an LID→coded-font-name mapping (`MCFMapping`); `Reduce` resolves SCFL local font IDs through it to the pinned synthetic metrics table (`line.LookupFont`). LID 0 stays the default font; the map resets at BDT; a later MCF replaces the earlier. Duplicate LIDs, non-X'05' resource types, unmapped LIDs, non-X'8E' font identification, and coded fonts without pinned metrics all fail loudly — v1 never guesses metrics. Documented in the new "Font mapping (MCF / SCFL)" section of docs/ptoca-data-dictionary.md; contract §8 touched up.
 
 ### Fixed
 - Object-container fields BOC/EOC/OCD (contract §9) no longer abort the decode; they decode as excluded `RawField` passthrough.

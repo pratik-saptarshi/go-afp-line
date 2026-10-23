@@ -45,6 +45,76 @@ for the 19 original sequences; `docs/_evidence/ptoca-0x80-research.md` for SEC.
   device default color, which is why go-afp-line records SEC without applying it.
 - Lengths outside 14–16 are a loud `KindStructure` error.
 
+## Font mapping (MCF / SCFL)
+
+Sources: IBM MO:DCA Reference — MCF Syntax (p. 229), Fully Qualified Name
+triplet X'02' (pp. 341–342), Resource Local Identifier triplet X'24' (p. 368).
+The wire rules below are paraphrased; the reference is normative.
+
+An MCF (Map Coded Font, D3AB8A) field carries 1–254 repeating groups. Each
+group opens with a 2-byte big-endian `RGLength` (self-inclusive) followed by a
+run of MO:DCA triplets (`afp.ParseMCFMapping`).
+
+- **LID** comes from the X'24' triplet: triplet-data byte 1 is the resource
+  type, byte 2 the one-byte LID (p. 368). Inside an MCF group only resource
+  type X'05' (coded font) is permitted; anything else is a loud
+  `KindStructure` error. A group without an X'24' borrows the architected
+  default LID X'00' — applied per group, which is v1's reading of the
+  reference default (p. 231).
+- **Name** comes from the X'02' triplet with FQNType X'8E' (coded-font name
+  reference): triplet-data byte 1 is the FQNType, byte 2 the format, and the
+  name bytes follow, decoded as EBCDIC-037 (pp. 341–342).
+- **Duplicate LIDs are a loud error:** the X'24' LID is defined as a unique
+  identifier (p. 368), so a repeated LID across the field's groups aborts
+  with `KindStructure` — never merged, never shadowed.
+- **Other identification forms are tracked, never silently skipped:** a group
+  with an X'24' but no X'8E' name (e.g. GRID reference X'84', or a
+  code-page/charset pair X'85'/X'86') is recorded in
+  `MCFMapping.Unsupported`, in group order, and surfaced loudly at
+  resolution time.
+
+### Resolution chain
+
+`Reduce` keeps one `*afp.MCFMapping` per document (`reduceState.mcf`):
+
+1. SCFL local ID from the PTOCA stream →
+2. MCF `ByLID` map → coded font name →
+3. `line.LookupFont` → pinned metrics.
+
+LID 0 bypasses the map entirely (the default font, `FIX-MONO-10`). A later
+MCF in the same document replaces the earlier map; the map resets to nil at
+BDT, so mappings never leak across documents.
+
+The pinned table is the only autonomous font source: `FIX-MONO-10`
+(synthetic monospace, every glyph 600/1000 em) and `FIX-PROP-10` (synthetic
+proportional, a few declared advances — space 250, A 700, e 550, H 720, l 280,
+o 560 — default 500/1000 em). These are synthetic fixtures only; real FOCA
+resources stay excluded per the subset contract.
+
+### Fail-closed
+
+v1 never guesses metrics. Every broken link in the chain is a loud
+`afp.DecodeError` (`fontIDForLID`, `afptoline/reduce.go`):
+
+- duplicate LID or non-X'05' ResType in an MCF field → `KindStructure` at
+  parse time;
+- `"SCFL local font ID %d has no MCF mapping (no MCF in stream)"` — nonzero
+  SCFL LID with no MCF yet in the document;
+- `"SCFL local font ID %d has no MCF mapping (MCF present, LID unmapped)"`
+  — LID absent from the map;
+- `"MCF local font ID %d uses unsupported font identification (only X'8E' coded-font-name references are mapped)"`
+  — the group carried an X'24' but no X'8E' name;
+- `"coded font %q (MCF local font ID %d) has no pinned metrics"` — the
+  mapped name has no entry in the pinned table.
+
+The 0020 profile file (`01_Health_Coverage.afp`) carries no MCF while its PTX
+uses SCFL LIDs 1–3: reduction fails on LID 1 with the no-MCF-mapping
+diagnostic. (Verified locally against the profile bundle; the file is not in
+this repo.)
+
+**Rejected alternative:** silent fallback to default metrics for unmapped
+LIDs — explicitly not implemented; needs a product call.
+
 ## Known but excluded
 
 | Code | Status |
