@@ -225,6 +225,14 @@ func Fields(r io.Reader) iter.Seq2[StreamField, error] {
 // That bound is a v1 resource limit, not an MO:DCA rule — the architecture
 // permits larger logical fields via segmentation, but the v1 pipeline
 // cannot represent them; see boundFrag.
+//
+// Known limitation (v1): the reassembled StreamField carries the first
+// fragment's Offset and the logical Data, so Offset+len(Data) understates
+// the true wire end by the omitted fragment introducers. Consumers
+// deriving inter-field gaps or end-of-stream positions from it (e.g.
+// reduce.go's marker/EOF bookkeeping) will see a diagnostic offset that is
+// early by that amount when a segmented field is present. Parsing itself
+// is unaffected — field start offsets and data are exact.
 func reassembleSegmented(inner iter.Seq2[StreamField, error]) iter.Seq2[StreamField, error] {
 	return func(yield func(StreamField, error) bool) {
 		var (
@@ -321,6 +329,11 @@ func reassembleSegmented(inner iter.Seq2[StreamField, error]) iter.Seq2[StreamFi
 				}
 				frag, serr := stripFieldPadding(sf.Data[in.HeaderLength():], in)
 				if serr != nil {
+					var derr DecodeError
+					if errors.As(serr, &derr) {
+						derr.Offset = sf.Offset + derr.Offset
+						serr = derr
+					}
 					if !fail(StreamField{}, serr) {
 						return
 					}
@@ -351,6 +364,11 @@ func reassembleSegmented(inner iter.Seq2[StreamField, error]) iter.Seq2[StreamFi
 				}
 				frag, serr := stripFieldPadding(sf.Data[in.HeaderLength():], in)
 				if serr != nil {
+					var derr DecodeError
+					if errors.As(serr, &derr) {
+						derr.Offset = sf.Offset + derr.Offset
+						serr = derr
+					}
 					if !fail(StreamField{}, serr) {
 						return
 					}

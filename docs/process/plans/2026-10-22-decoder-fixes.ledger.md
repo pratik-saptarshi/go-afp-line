@@ -197,3 +197,20 @@ real (spec-confirmed, not nits):
   the gate verifies decode/encode fidelity, not wire-byte preservation of
   semantically-irrelevant padding.
 - TDD: all three new tests failed RED, green post-fix. Full suite green.
+
+## Follow-up 3: Codex review of 8f94298 (2026-10-22 ~24:15 CDT)
+Three new threads:
+- Ruling (X'85'/X'86' pair): real gap in the exclusivity fix — a lone X'85'
+  or X'86' does not satisfy the MO:DCA minimum identification (the pair is
+  mandatory). parseMCFGroup now rejects hasX85 != hasX86 (KindStructure).
+  TDD: TestParseMCFMapping_RejectsLonePairMember RED→green.
+- Ruling (padding error offsets): real — stripFieldPadding errors inside
+  reassembleSegmented were forwarded with field-local Offset 0. Both sites
+  now rebase to the fragment's wire offset (sf.Offset). TDD:
+  TestFields_SegmentedBadPaddingRebased RED→green.
+- Ruling (reassembled end offsets): real but diagnostic-only — Offset+len(Data)
+  understates the wire end by omitted introducers, affecting only reduce.go's
+  marker/EOF diagnostic offsets for streams containing segmented fields;
+  parsing is unaffected. Documented as a known v1 limitation in the
+  reassembleSegmented doc comment rather than changing the StreamField
+  contract. Thread resolved with that disposition.

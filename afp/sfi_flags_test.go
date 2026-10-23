@@ -303,3 +303,21 @@ func TestRoundTrip_PaddedFieldNormalizes(t *testing.T) {
 		t.Fatalf("RoundTrip(padded field): unexpected error: %v", err)
 	}
 }
+
+// A malformed padded fragment inside a segmented sequence reports the
+// error at the fragment's wire offset, not at field-local 0.
+func TestFields_SegmentedBadPaddingRebased(t *testing.T) {
+	// frag1: 20 bytes at offset 0. frag2 at offset 28 with PadFlag and a
+	// padding length (0xFF) exceeding its data.
+	frag1 := segField(0x20, bytes.Repeat([]byte{0x01}, 20))
+	badFrag := segField(0x20|0x08, []byte{0xAA, 0xFF}) // PadFlag, padLen 255 > 2
+	stream := append(append([]byte{}, frag1...), badFrag...)
+	_, err := collectFields(t, bytes.NewReader(stream))
+	derr := decodeErr(t, err)
+	if derr.Kind != KindStructure {
+		t.Errorf("error kind = %q, want %q", derr.Kind, KindStructure)
+	}
+	if derr.Offset != len(frag1) {
+		t.Errorf("error offset = %d, want %d (fragment wire offset)", derr.Offset, len(frag1))
+	}
+}

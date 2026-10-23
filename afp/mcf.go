@@ -191,6 +191,15 @@ func parseMCFGroup(triplets Triplets, base int) (lid byte, name string, hasName,
 			Reason: "MCF: mutually exclusive FQN types in one repeating group (X'84', X'85'/X'86', X'8E')",
 		}
 	}
+	// X'85' and X'86' are a mandatory pair (MO:DCA MCF semantics): one
+	// without the other does not satisfy the minimum identification.
+	if hasX85 != hasX86 {
+		return 0, "", false, false, DecodeError{
+			Offset: base,
+			Kind:   KindStructure,
+			Reason: "MCF: X'85' (code page name) and X'86' (charset name) must appear as a pair",
+		}
+	}
 	return lid, name, hasName, seenX24, nil
 }
 

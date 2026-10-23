@@ -327,3 +327,14 @@ func TestParseMCFMapping_RejectsMixedFQNForms(t *testing.T) {
 	_, err := ParseMCFMapping(data)
 	assertDecodeKindStructure(t, err, "X'8E'+X'85' mixed forms")
 }
+
+// X'85' without X'86' (or vice versa) does not satisfy the MO:DCA minimum
+// identification — the pair is mandatory, so a lone member is malformed.
+func TestParseMCFMapping_RejectsLonePairMember(t *testing.T) {
+	data := mcfGroup(
+		tripletX24(0x05, 0x01),
+		tripletX02(0x85, fixMono10),
+	)
+	_, err := ParseMCFMapping(data)
+	assertDecodeKindStructure(t, err, "lone X'85'")
+}
