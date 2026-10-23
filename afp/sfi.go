@@ -217,10 +217,14 @@ func Fields(r io.Reader) iter.Seq2[StreamField, error] {
 // data length, serialized with the existing Introducer.Encode helper.
 // Offset is the first fragment's wire offset.
 //
-// Fail-closed: a different-type field while a sequence is open, a stream
-// that ends (clean EOF or any error) before the flag-clear terminator, or
-// a reassembled length above the MO:DCA maximum each yield a loud
-// KindStructure DecodeError; a partial sequence is never yielded.
+// Fail-closed: a different-type field while a sequence is open or a stream
+// that ends (clean EOF or any error) before the flag-clear terminator
+// yields a loud KindStructure DecodeError; a partial sequence is never
+// yielded. A sequence whose logical field would exceed maxSFLength aborts
+// with KindBudget before the crossing fragment is buffered (DoS guard).
+// That bound is a v1 resource limit, not an MO:DCA rule — the architecture
+// permits larger logical fields via segmentation, but the v1 pipeline
+// cannot represent them; see boundFrag.
 func reassembleSegmented(inner iter.Seq2[StreamField, error]) iter.Seq2[StreamField, error] {
 	return func(yield func(StreamField, error) bool) {
 		var (
@@ -243,6 +247,28 @@ func reassembleSegmented(inner iter.Seq2[StreamField, error]) iter.Seq2[StreamFi
 		}
 		fail := func(sf StreamField, err error) bool {
 			return yield(sf, err)
+		}
+		// boundFrag enforces the v1 reassembly bound before each append: a
+		// sequence whose logical field would exceed maxSFLength aborts
+		// loudly instead of accumulating unbounded memory (DoS guard).
+		// The bound is a v1 resource limit, not an MO:DCA violation — the
+		// architecture permits larger logical fields via segmentation, but
+		// the v1 pipeline (Introducer.Encode, DecodeField, the StreamField
+		// length contract) cannot represent a field longer than
+		// maxSFLength. The stream is well-formed; it is simply too large
+		// to decode safely, so the error is KindBudget, matching the
+		// decoded-text budget convention.
+		boundFrag := func(frag []byte) error {
+			if seqIn.HeaderLength()+len(seqData)+len(frag) > maxSFLength {
+				return DecodeError{
+					Kind:    KindBudget,
+					FieldID: seqIn.TypeIDString(),
+					Offset:  seqOff,
+					Reason: fmt.Sprintf("reassembled segmented field would exceed v1 limit of %d bytes",
+						maxSFLength),
+				}
+			}
+			return nil
 		}
 		for sf, err := range inner {
 			if err != nil {
@@ -300,6 +326,12 @@ func reassembleSegmented(inner iter.Seq2[StreamField, error]) iter.Seq2[StreamFi
 					}
 					return
 				}
+				if berr := boundFrag(frag); berr != nil {
+					if !fail(StreamField{}, berr) {
+						return
+					}
+					return
+				}
 				seqData = append(seqData, frag...)
 			default:
 				// Flag-clear field while a sequence is open: it must be
@@ -324,25 +356,21 @@ func reassembleSegmented(inner iter.Seq2[StreamField, error]) iter.Seq2[StreamFi
 					}
 					return
 				}
-				seqData = append(seqData, frag...)
-				// The logical field is complete and padding-free: clear
-				// both flags on the first fragment's introducer and
-				// recompute the length over the concatenated data.
-				lin := seqIn
-				lin.Flags &^= flagSeg | flagPad
-				lin.Length = lin.HeaderLength() + len(seqData)
-				if lin.Length > maxSFLength {
-					if !fail(StreamField{}, DecodeError{
-						Kind:    KindStructure,
-						FieldID: lin.TypeIDString(),
-						Offset:  seqOff,
-						Reason: fmt.Sprintf("reassembled segmented field length %d exceeds MO:DCA maximum %d",
-							lin.Length, maxSFLength),
-					}) {
+				if berr := boundFrag(frag); berr != nil {
+					if !fail(StreamField{}, berr) {
 						return
 					}
 					return
 				}
+				seqData = append(seqData, frag...)
+				// The logical field is complete and padding-free: clear
+				// both flags on the first fragment's introducer and
+				// recompute the length over the concatenated data. The
+				// per-append bound above guarantees lin.Length stays
+				// within maxSFLength, so Encode cannot panic.
+				lin := seqIn
+				lin.Flags &^= flagSeg | flagPad
+				lin.Length = lin.HeaderLength() + len(seqData)
 				logical := append(lin.Encode(), seqData...)
 				inSeq, seqData = false, nil
 				if !fail(StreamField{Data: logical, Offset: seqOff}, nil) {

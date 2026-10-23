@@ -154,3 +154,24 @@ Extra verification (not committed):
   double-check the replacement didn't swallow neighbors.
 - NOT committed, NOT pushed — coordinator handles commit after the
   independent reviewer signs off.
+
+## Follow-up: Codex post-wave review (2026-10-22 ~23:45 CDT)
+Two new threads on the fresh reassembly code, both legitimate bugs in the
+wave's implementation (not pre-existing scope):
+- Ruling: the wave's `lin.Length > maxSFLength → KindStructure "exceeds MO:DCA
+  maximum"` check was spec-misframed — the 32,767 limit is per physical
+  field, and segmentation exists precisely for larger logical fields.
+  However, the v1 pipeline genuinely cannot represent a logical field
+  > maxSFLength (Introducer.Encode panics, decodeIntroducer rejects,
+  DecodeField re-validates, StreamField contract). Full >32767 support would
+  need pipeline-level changes — disproportionate for v1, and the spec's
+  normal >32767 case is OCA data, which the subset excludes. Resolution:
+  keep the bound but reframe honestly as a v1 resource limit with KindBudget
+  ("The stream was well-formed; it was simply too large to decode safely"),
+  matching the decoded-text budget convention.
+- Ruling: the bound is now enforced per-append (boundFrag closure) before
+  each fragment is buffered, so a hostile stream cannot accumulate unbounded
+  memory before the terminator arrives (DoS guard). The old post-terminator
+  check was unreachable afterwards and was removed.
+- TDD: TestFields_SegmentedExceedingBoundAbortsEarly failed RED (got
+  KindStructure, wanted KindBudget), green post-fix. Full suite green.

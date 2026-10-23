@@ -273,3 +273,22 @@ func TestFields_SegmentedStripsPerFragmentPadding(t *testing.T) {
 		t.Errorf("Fields[0].Data = % x, want % x", fields[0].Data, want)
 	}
 }
+
+// The reassembly bound is enforced per-append (DoS guard), not at the
+// terminator: a sequence whose accumulated data would exceed the v1 bound
+// aborts loudly with KindBudget as soon as the crossing fragment arrives,
+// instead of accumulating unbounded memory. frag1 carries the maximum
+// physical data payload (32759 bytes); frag2's 10 bytes would push the
+// logical field past maxSFLength.
+func TestFields_SegmentedExceedingBoundAbortsEarly(t *testing.T) {
+	big := make([]byte, 32759)
+	frag1 := segField(0x20, big)
+	frag2 := segField(0x20, []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A})
+	stream := append(append([]byte{}, frag1...), frag2...)
+
+	_, err := collectFields(t, bytes.NewReader(stream))
+	derr := decodeErr(t, err)
+	if derr.Kind != KindBudget {
+		t.Errorf("error kind = %q, want %q (resource bound, not malformed input)", derr.Kind, KindBudget)
+	}
+}
