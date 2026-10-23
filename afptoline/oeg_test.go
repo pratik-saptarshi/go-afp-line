@@ -3,6 +3,7 @@ package afptoline
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/pratik-saptarshi/go-afp-line/afp"
@@ -335,12 +336,15 @@ func TestReduce_UnclosedBOGAbortsAtEPG(t *testing.T) {
 }
 
 func TestReduce_UnclosedBOGAbortsAtBDT(t *testing.T) {
+	// BOG opened at document level between documents: the second BDT
+	// must abort. (Using bdt,bog,edt,bdt would let the first EDT fire
+	// before BDT is reached, so the BDT guard would never be exercised.)
 	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
 	bog := rawField(tBOG, nil)
 	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
 
 	var buf bytes.Buffer
-	for _, f := range [][]byte{bdt, bog, edt, bdt, edt} {
+	for _, f := range [][]byte{bdt, edt, bog, bdt, edt} {
 		buf.Write(f)
 	}
 	_, _, err := Reduce(&buf)
@@ -353,6 +357,11 @@ func TestReduce_UnclosedBOGAbortsAtBDT(t *testing.T) {
 	}
 	if derr.Kind != afp.KindStructure {
 		t.Errorf("error kind = %q, want %q", derr.Kind, afp.KindStructure)
+	}
+	// Must be the BDT-specific diagnostic, not the EDT or end-of-stream
+	// backstop: otherwise removing the BDT guard leaves this green.
+	if got := derr.Error(); !contains(got, "at document boundary") {
+		t.Errorf("diagnostic %q does not name the BDT boundary", got)
 	}
 }
 
@@ -432,3 +441,5 @@ func TestReduce_UnclosedBOGAbortsAtEOF(t *testing.T) {
 		t.Errorf("error kind = %q, want %q", derr.Kind, afp.KindStructure)
 	}
 }
+
+func contains(s, sub string) bool { return strings.Contains(s, sub) }
