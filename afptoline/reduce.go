@@ -233,8 +233,10 @@ func (st *reduceState) visit(f afp.Field) error {
 			return st.fail(t.TypeID(), afp.KindStructure, "nested BDT: document already open")
 		}
 		st.inDoc = true
-		st.mcf = nil     // mappings never leak across documents
-		st.inOEG = false // an OEG cannot span a document boundary
+		st.mcf = nil // mappings never leak across documents
+		if st.inOEG {
+			return st.fail(t.TypeID(), afp.KindStructure, "unclosed OEG at document boundary: BOG without EOG")
+		}
 		return nil
 	case *afp.EDT:
 		if !st.inDoc {
@@ -261,7 +263,9 @@ func (st *reduceState) visit(f afp.Field) error {
 		st.ptxSt = nil // new page = new coordinate space
 		st.mcf = nil   // MCF is page-scoped (Active Environment Group): a
 		// new page starts with no mapping
-		st.inOEG = false // an OEG cannot span a page boundary
+		if st.inOEG {
+			return st.fail(t.TypeID(), afp.KindStructure, "unclosed OEG at page boundary: BOG without EOG")
+		}
 		return nil
 	case *afp.EPG:
 		if st.page == nil {
@@ -286,7 +290,9 @@ func (st *reduceState) visit(f afp.Field) error {
 		st.closeGroup() // grpBPG
 		st.pages = append(st.pages, *st.page)
 		st.page = nil
-		st.inOEG = false // a page end implicitly closes any open OEG scope
+		if st.inOEG {
+			return st.fail(t.TypeID(), afp.KindStructure, "unclosed OEG at page end: BOG without EOG")
+		}
 		return nil
 	case *afp.RawField:
 		return st.visitRaw(t)

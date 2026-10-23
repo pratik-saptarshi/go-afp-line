@@ -212,21 +212,32 @@ func TestReduce_OEGMCFMalformedStaysLoud(t *testing.T) {
 // the page map. Two MCFs mapping the same LID after the unclosed BOG must
 // not hit the duplicate-LID abort (without the guard the second MCF aborts;
 // RED).
-func TestReduce_UnclosedBOGMCFDiscarded(t *testing.T) {
+func TestReduce_UnclosedBOGAbortsLoudAtEPG(t *testing.T) {
+	// An unclosed BOG aborts loudly at the page boundary instead of
+	// silently clearing: silent clearing would discard subsequent valid
+	// page MCFs and surface a misleading "no MCF mapping" diagnostic far
+	// from the cause.
 	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
 	bpg := rawField(tBPG, ebcdicSpaces(8))
 	bog := rawField(tBOG, nil)
 	mcf1 := rawField(tMCF, mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x8E, mcfFixMono10)))
-	mcf2 := rawField(tMCF, mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x8E, mcfFixProp10)))
 	epg := rawField(tEPG, ebcdicSpaces(8))
 	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
 
 	var buf bytes.Buffer
-	for _, f := range [][]byte{bdt, bpg, bog, mcf1, mcf2, epg, edt} {
+	for _, f := range [][]byte{bdt, bpg, bog, mcf1, epg, edt} {
 		buf.Write(f)
 	}
-	if _, _, err := Reduce(&buf); err != nil {
-		t.Fatalf("Reduce: %v, want no error (unclosed-OEG MCFs discarded)", err)
+	_, _, err := Reduce(&buf)
+	if err == nil {
+		t.Fatalf("Reduce: expected unclosed-OEG error at EPG, got nil")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("Reduce: expected DecodeError, got %T: %v", err, err)
+	}
+	if derr.Kind != afp.KindStructure {
+		t.Errorf("error kind = %q, want %q", derr.Kind, afp.KindStructure)
 	}
 }
 
@@ -292,5 +303,82 @@ func TestReduce_EPGClearsOpenOEG(t *testing.T) {
 	}
 	if derr.Kind != afp.KindStructure {
 		t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindStructure)
+	}
+}
+
+// An unclosed BOG must abort loudly at the next boundary instead of
+// silently clearing the scope flag: silent clearing would discard
+// subsequent valid page MCFs and surface a misleading "no MCF mapping"
+// diagnostic far from the cause.
+func TestReduce_UnclosedBOGAbortsAtEPG(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bpg := rawField(tBPG, nil)
+	bog := rawField(tBOG, nil)
+	epg := rawField(tEPG, nil)
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+
+	var buf bytes.Buffer
+	for _, f := range [][]byte{bdt, bpg, bog, epg, edt} {
+		buf.Write(f)
+	}
+	_, _, err := Reduce(&buf)
+	if err == nil {
+		t.Fatalf("Reduce: expected unclosed-OEG error at EPG, got nil")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("Reduce: expected DecodeError, got %T: %v", err, err)
+	}
+	if derr.Kind != afp.KindStructure {
+		t.Errorf("error kind = %q, want %q", derr.Kind, afp.KindStructure)
+	}
+}
+
+func TestReduce_UnclosedBOGAbortsAtBDT(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bog := rawField(tBOG, nil)
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+
+	var buf bytes.Buffer
+	for _, f := range [][]byte{bdt, bog, edt, bdt, edt} {
+		buf.Write(f)
+	}
+	_, _, err := Reduce(&buf)
+	if err == nil {
+		t.Fatalf("Reduce: expected unclosed-OEG error at BDT, got nil")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("Reduce: expected DecodeError, got %T: %v", err, err)
+	}
+	if derr.Kind != afp.KindStructure {
+		t.Errorf("error kind = %q, want %q", derr.Kind, afp.KindStructure)
+	}
+}
+
+func TestReduce_UnclosedBOGAbortsAtBPG(t *testing.T) {
+	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
+	bpg := rawField(tBPG, nil)
+	epg := rawField(tEPG, nil)
+	bog := rawField(tBOG, nil)
+
+	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))
+
+	var buf bytes.Buffer
+	// BOG opened at document level after the first page closed; the next
+	// BPG must abort rather than silently clearing the flag.
+	for _, f := range [][]byte{bdt, bpg, epg, bog, bpg, epg, edt} {
+		buf.Write(f)
+	}
+	_, _, err := Reduce(&buf)
+	if err == nil {
+		t.Fatalf("Reduce: expected unclosed-OEG error at BPG, got nil")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("Reduce: expected DecodeError, got %T: %v", err, err)
+	}
+	if derr.Kind != afp.KindStructure {
+		t.Errorf("error kind = %q, want %q", derr.Kind, afp.KindStructure)
 	}
 }
