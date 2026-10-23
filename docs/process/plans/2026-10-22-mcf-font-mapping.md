@@ -1,7 +1,5 @@
 # MCF Font Mapping Implementation Plan — v2
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Build precise, fail-closed MCF font-mapping diagnostics plus the LID→coded-font-name parser infrastructure for future pinned-font decisions, and record the complete mapping landscape in the data dictionary. This plan does not make `Reduce` succeed on the 0020 profile file — the stream contains no MCF and the pinned table is synthetic-only by contract, so real-file success awaits his future product calls (real pinned fonts, silent-fallback policy).
 
 **Architecture:** New `afp.ParseMCFMapping` parses MCF repeating groups into an `MCFMapping` (LID→name for X'02'/X'8E' groups; LIDs with other FQN forms tracked as unsupported, never silently dropped). `reduceState` carries `*MCFMapping` (nil until the first MCF; reset on BDT so maps never leak across documents). `fontIDForLID` resolves LID → name → `line.LookupFont`, failing loudly with one of three precise diagnostics (no MCF in stream / LID unmapped / unsupported identification form / unpinned font). The v1 "never guesses metrics" rule is preserved.
