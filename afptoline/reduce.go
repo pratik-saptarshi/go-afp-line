@@ -168,6 +168,9 @@ type reduceState struct {
 	// metrics); a nil mcf means no MCF has appeared on the current page,
 	// which is a loud error for any nonzero LID — never a silent default.
 	mcf *afp.MCFMapping
+	// inOEG is true while inside an Object Environment Group; MCFs merge
+	// into the page map only when false.
+	inOEG bool
 }
 
 // groupKind identifies a group delimiter on the pairing stack. BPG rides
@@ -231,6 +234,9 @@ func (st *reduceState) visit(f afp.Field) error {
 		}
 		st.inDoc = true
 		st.mcf = nil // mappings never leak across documents
+		if st.inOEG {
+			return st.fail(t.TypeID(), afp.KindStructure, "unclosed OEG at document boundary: BOG without EOG")
+		}
 		return nil
 	case *afp.EDT:
 		if !st.inDoc {
@@ -241,6 +247,9 @@ func (st *reduceState) visit(f afp.Field) error {
 		}
 		if len(st.groups) != 0 {
 			return st.fail(t.TypeID(), afp.KindStructure, "EDT with unclosed group")
+		}
+		if st.inOEG {
+			return st.fail(t.TypeID(), afp.KindStructure, "unclosed OEG at document end: BOG without EOG")
 		}
 		st.inDoc = false
 		return nil
@@ -257,6 +266,9 @@ func (st *reduceState) visit(f afp.Field) error {
 		st.ptxSt = nil // new page = new coordinate space
 		st.mcf = nil   // MCF is page-scoped (Active Environment Group): a
 		// new page starts with no mapping
+		if st.inOEG {
+			return st.fail(t.TypeID(), afp.KindStructure, "unclosed OEG at page boundary: BOG without EOG")
+		}
 		return nil
 	case *afp.EPG:
 		if st.page == nil {
@@ -281,6 +293,9 @@ func (st *reduceState) visit(f afp.Field) error {
 		st.closeGroup() // grpBPG
 		st.pages = append(st.pages, *st.page)
 		st.page = nil
+		if st.inOEG {
+			return st.fail(t.TypeID(), afp.KindStructure, "unclosed OEG at page end: BOG without EOG")
+		}
 		return nil
 	case *afp.RawField:
 		return st.visitRaw(t)
@@ -294,6 +309,13 @@ func (st *reduceState) visitRaw(t *afp.RawField) error {
 	if id == ptxTypeID {
 		return st.visitPTX(t)
 	}
+	if id == "D3A8C7" { // BOG: track the OEG scope for MCF merging
+		st.inOEG = true
+	} else if id == "D3A9C7" { // EOG: the OEG scope ends here
+		st.inOEG = false
+	}
+	// Fall through: BOG/EOG stay in the excluded-IDs table and take the
+	// existing census path below — no manual recording, no double-count.
 	if t.Excluded {
 		st.excls = append(st.excls, exclusionFor(t, st.cp))
 		return nil
@@ -381,6 +403,9 @@ func (st *reduceState) visitRaw(t *afp.RawField) error {
 				return derr
 			}
 			return err
+		}
+		if st.inOEG {
+			return nil // OEG-scoped mapping discarded; page namespace untouched
 		}
 		if st.mcf == nil {
 			st.mcf = &m // first MCF on the page: seed the map
@@ -620,6 +645,9 @@ func (st *reduceState) finish() error {
 	}
 	if st.inDoc {
 		return st.fail("", afp.KindStructure, "end of stream with open document: missing EDT")
+	}
+	if st.inOEG {
+		return st.fail("", afp.KindStructure, "end of stream with unclosed OEG: BOG without EOG")
 	}
 	return nil
 }
