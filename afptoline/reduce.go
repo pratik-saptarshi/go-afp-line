@@ -395,6 +395,9 @@ func (st *reduceState) visitRaw(t *afp.RawField) error {
 			}
 			return err
 		}
+		if st.inOEG {
+			return nil // OEG-scoped mapping discarded; page namespace untouched
+		}
 		if st.mcf == nil {
 			st.mcf = &m // first MCF on the page: seed the map
 		} else if err := mergeMCFMappings(st.mcf, m, st.off+t.Intro.HeaderLength(), t.TypeID()); err != nil {

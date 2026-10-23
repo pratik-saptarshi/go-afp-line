@@ -113,14 +113,14 @@ accumulated map — mapped or unsupported — aborts loudly under the uniform
 duplicate rule, so a later MCF can extend the map but never override an
 entry.
 
-Known limitation (v1): the page accumulator does not distinguish the page's
-Active Environment Group from an Object Environment Group (OEG) — an MCF
-carried inside an OEG would fold into the page's namespace. The reducer has
-no OEG (BOG/EOG) boundary tracking. Triggering this requires OEG-wrapped MCF
-input, which sits outside the contracted object model (every object type is
-excluded under §9), so no in-subset input reaches it. Scoping merges per
-environment group needs its own design; until then this stays a documented
-limitation, not a silent behavior.
+Object Environment Group (OEG) scoping: BOG/EOG boundaries are tracked via
+an `inOEG` scope flag on the reducer state, set when `visitRaw` intercepts
+each boundary and cleared at BDT, BPG, and EPG — an OEG cannot span a
+document or page boundary. An MCF inside an OEG is still parsed, so
+malformed input aborts loudly, but its mapping is discarded instead of
+merged: the page namespace is never polluted. An unclosed BOG is
+conservatively fail-closed — the flag stays set and later MCFs are
+discarded rather than merged into the wrong scope.
 
 The pinned table is the only autonomous font source: `FIX-MONO-10`
 (synthetic monospace, every glyph 600/1000 em) and `FIX-PROP-10` (synthetic
