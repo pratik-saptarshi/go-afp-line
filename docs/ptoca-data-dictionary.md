@@ -67,14 +67,20 @@ mapping, not an error.
   silently merged, which is the fail-closed outcome the reference's
   uniqueness rule demands.
 - **Name** comes from the X'02' triplet with FQNType X'8E' (coded-font name
-  reference): triplet-data byte 1 is the FQNType, byte 2 the format, and the
-  name bytes follow, decoded as EBCDIC-037 (pp. 341–342). X'02' uniqueness is
+  reference) *and* FQNFmt X'00' (character-string format): triplet-data byte
+  1 is the FQNType, byte 2 the format, and the name bytes follow, decoded as
+  EBCDIC-037 (pp. 341–342). An X'8E' with any other FQNFmt (e.g. X'10' OID)
+  carries no character string, so its bytes are never decoded as a name —
+  the group is treated as nameless and its LID lands in `Unsupported` (see
+  below). X'02' uniqueness is
   per FQNType, not per group: X'85' (code page name) + X'86' (charset name)
   in one group is the architecturally standard pair (p. 230); a repeated
   FQNType in one group is a loud `KindStructure` error.
 - **Duplicate LIDs are a loud error:** the X'24' LID is defined as a unique
   identifier (p. 368), so a repeated LID across the field's groups aborts
-  with `KindStructure` — never merged, never shadowed. This knowingly
+  with `KindStructure` — never merged, never shadowed. The rule applies
+  across MCF fields merged into one page's map as well (see the resolution
+  chain). This knowingly
   ignores p. 232's exception for double-byte font sections (same X'24' value
   across contiguous groups): v1 does not implement double-byte fonts, so
   such MCFs abort loudly at parse time rather than mis-resolving later.
@@ -97,9 +103,15 @@ mapping, not an error.
 2. MCF `ByLID` map → coded font name →
 3. `line.LookupFont` → pinned metrics.
 
-LID 0 bypasses the map entirely (the default font, `FIX-MONO-10`). A later
-MCF in the same document replaces the earlier map; the map resets to nil at
-BDT, so mappings never leak across documents.
+LID 0 bypasses the map entirely (the default font, `FIX-MONO-10`). The map
+is page-scoped: it resets to nil at BDT and at each BPG, so mappings never
+leak across pages or documents — a new page starts with no mapping. MCFs on
+one page merge into the page's accumulated map: the first MCF seeds it and
+each further MCF folds in its fresh LIDs (names into `ByLID`, unsupported
+LIDs appended to `Unsupported` in group order); a LID already present in the
+accumulated map — mapped or unsupported — aborts loudly under the uniform
+duplicate rule, so a later MCF can extend the map but never override an
+entry.
 
 The pinned table is the only autonomous font source: `FIX-MONO-10`
 (synthetic monospace, every glyph 600/1000 em) and `FIX-PROP-10` (synthetic

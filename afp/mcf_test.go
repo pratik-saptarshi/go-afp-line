@@ -74,6 +74,27 @@ func TestParseMCFMapping(t *testing.T) {
 	}
 }
 
+func TestParseMCFMapping_FQNFmtOIDNotAName(t *testing.T) {
+	// X'02' with FQNType X'8E' but FQNFmt X'10' (OID, not the
+	// character-string format X'00'): the value bytes are not a character
+	// string, so the group carries no coded-font name — LID 4 lands in
+	// Unsupported and ByLID stays empty, with no error.
+	data := mcfGroup(
+		tripletX24(0x05, 0x04),
+		[]byte{0x06, 0x02, 0x8E, 0x10, 0xC1, 0xC2},
+	)
+	m, err := ParseMCFMapping(data)
+	if err != nil {
+		t.Fatalf("ParseMCFMapping: unexpected error: %v", err)
+	}
+	if len(m.ByLID) != 0 {
+		t.Errorf("ByLID: got %v, want empty (OID-format X'8E' is not a coded-font name)", m.ByLID)
+	}
+	if !reflect.DeepEqual(m.Unsupported, []byte{0x04}) {
+		t.Errorf("Unsupported: got %v, want [4]", m.Unsupported)
+	}
+}
+
 func TestParseMCFMapping_UnsupportedForm(t *testing.T) {
 	// X'24' LID 3 with an X'02' FQN of a type other than X'8E'
 	// (coded-font name): the LID cannot be mapped.

@@ -160,11 +160,13 @@ type reduceState struct {
 	// BPT, discarded on EPT, cleared on BPG (new page = new coordinate
 	// space); a PTX outside any BPT lazily starts (and keeps) a stream.
 	ptxSt *ptocaState
-	// mcf is the parsed Map Coded Font mapping, nil until the first MCF
-	// in the document. SCFL local font IDs resolve through it to coded
-	// font names (and from there to pinned metrics); a nil mcf means no
-	// MCF has appeared in the current document, which is a loud error
-	// for any nonzero LID — never a silent default.
+	// mcf is the parsed Map Coded Font mapping for the current page, nil
+	// until the first MCF on the page. MCF is page-scoped via the Active
+	// Environment Group: the BPG case resets the pointer on every page
+	// boundary (and BDT resets it for a new document). SCFL local font IDs
+	// resolve through it to coded font names (and from there to pinned
+	// metrics); a nil mcf means no MCF has appeared on the current page,
+	// which is a loud error for any nonzero LID — never a silent default.
 	mcf *afp.MCFMapping
 }
 
@@ -253,6 +255,8 @@ func (st *reduceState) visit(f afp.Field) error {
 		st.page = &line.Page{Number: len(st.pages) + 1, Width: w, Height: h}
 		st.openGroup(grpBPG)
 		st.ptxSt = nil // new page = new coordinate space
+		st.mcf = nil   // MCF is page-scoped (Active Environment Group): a
+		// new page starts with no mapping
 		return nil
 	case *afp.EPG:
 		if st.page == nil {
@@ -354,10 +358,13 @@ func (st *reduceState) visitRaw(t *afp.RawField) error {
 		}
 		st.closeGroup() // grpBPT
 		st.ptxSt = nil  // text object closed: discard the stream
-	case "D3AB8A": // MCF: parse the LID→coded-font mapping and keep it
-		// for SCFL resolution. A later MCF in the same document replaces
-		// the earlier map; the BDT case resets the pointer, so maps never
-		// leak across documents.
+	case "D3AB8A": // MCF: parse the LID→coded-font mapping and merge it
+		// into the page's accumulated map. The map is page-scoped (the
+		// BPG case resets the pointer), so the first MCF on a page seeds
+		// it and each further MCF on the same page merges into it; a LID
+		// already present in the accumulated map — mapped or unsupported
+		// — aborts loudly under the uniform duplicate rule (the
+		// replace-earlier-map semantics are superseded).
 		if !st.inDoc {
 			return st.fail(id, afp.KindStructure, "environment field outside document")
 		}
@@ -375,7 +382,11 @@ func (st *reduceState) visitRaw(t *afp.RawField) error {
 			}
 			return err
 		}
-		st.mcf = &m
+		if st.mcf == nil {
+			st.mcf = &m // first MCF on the page: seed the map
+		} else if err := mergeMCFMappings(st.mcf, m, st.off+t.Intro.HeaderLength(), t.TypeID()); err != nil {
+			return err
+		}
 	case "D3B19B": // PTD: v1 notes the descriptor; fixtures carry no AEG
 		if !st.inDoc {
 			return st.fail(id, afp.KindStructure, "environment field outside document")

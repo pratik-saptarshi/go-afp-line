@@ -48,7 +48,10 @@ func tripletX02(fqnType byte, name []byte) []byte {
 	return append(out, name...)
 }
 
-// mcfReduceStream builds a legal BDT → [MCF] → BPG → BPT → PTX(SCFL lid,
+// tMCF is the MCF (Map Coded Font) structured-field type ID.
+var tMCF = [3]byte{0xD3, 0xAB, 0x8A}
+
+// mcfReduceStream builds a legal BDT → BPG → [MCF] → BPT → PTX(SCFL lid,
 // then TRN "A") → EPT → EPG → EDT stream. A nil mcfData omits the MCF field.
 func mcfReduceStream(mcfData []byte, lid byte) []byte {
 	var mcfDatas [][]byte
@@ -58,26 +61,54 @@ func mcfReduceStream(mcfData []byte, lid byte) []byte {
 	return mcfDocFields(mcfDatas, lid)
 }
 
-// mcfDocFields builds one document: BDT → MCF* → BPG → BPT → PTX(SCFL lid,
+// mcfDocFields builds one document: BDT → BPG → MCF* → BPT → PTX(SCFL lid,
 // then TRN "A") → EPT → EPG → EDT, with one MCF field per mcfDatas entry in
-// document order (needed to pin later-MCF-replaces-earlier and the BDT
-// reset across documents).
+// page order (MCFs live in the page's Active Environment Group and merge
+// into the page-scoped map).
 func mcfDocFields(mcfDatas [][]byte, lid byte) []byte {
-	tMCF := [3]byte{0xD3, 0xAB, 0x8A}
 	fields := [][]byte{
 		rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00)),
+		rawField(tBPG, ebcdicSpaces(8)),
 	}
 	for _, mcfData := range mcfDatas {
 		fields = append(fields, rawField(tMCF, mcfData))
 	}
 	fields = append(fields,
-		rawField(tBPG, ebcdicSpaces(8)),
 		rawField(tBPT, nil),
 		rawField(tPTX, append(seq(0xF0, lid), trn(0xC1)...)),
 		rawField(tEPT, nil),
 		rawField(tEPG, ebcdicSpaces(8)),
 		rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00)),
 	)
+	var buf bytes.Buffer
+	for _, f := range fields {
+		buf.Write(f)
+	}
+	return buf.Bytes()
+}
+
+// mcfTwoPageDoc builds a two-page document: BDT → [page: BPG → [MCF] → BPT
+// → PTX(SCFL lid, then TRN "A") → EPT → EPG] x2 → EDT. A nil mcfData omits
+// that page's MCF field. Used to pin MCF page-scoping across BPG.
+func mcfTwoPageDoc(page1MCF, page2MCF []byte, lid byte) []byte {
+	fields := [][]byte{
+		rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00)),
+	}
+	page := func(mcfData []byte) {
+		fields = append(fields, rawField(tBPG, ebcdicSpaces(8)))
+		if mcfData != nil {
+			fields = append(fields, rawField(tMCF, mcfData))
+		}
+		fields = append(fields,
+			rawField(tBPT, nil),
+			rawField(tPTX, append(seq(0xF0, lid), trn(0xC1)...)),
+			rawField(tEPT, nil),
+			rawField(tEPG, ebcdicSpaces(8)),
+		)
+	}
+	page(page1MCF)
+	page(page2MCF)
+	fields = append(fields, rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00)))
 	var buf bytes.Buffer
 	for _, f := range fields {
 		buf.Write(f)
@@ -147,15 +178,13 @@ func TestReduce_MCFUnsupportedForm(t *testing.T) {
 	assertReduceErrContains(t, err, "uses unsupported font identification")
 }
 
-// TestReduce_MCFSecondMappingWins: two MCF fields in one document carry
-// different mappings for the same LID — the later MCF replaces the earlier
-// map (reduce.go, D3AB8A case), so the PTX's SCFL LID 1 resolves to the
-// second MCF's coded font. A keep-first implementation (`if st.mcf == nil`)
-// pins the first mapping and must fail this test.
-func TestReduce_MCFSecondMappingWins(t *testing.T) {
-	first := mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x8E, mcfFixProp10))
-	second := mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x8E, mcfFixMono10))
-	doc, _, err := Reduce(bytes.NewReader(mcfDocFields([][]byte{first, second}, 0x01)))
+// TestReduce_MCFMergeDisjointLIDs: two MCF fields in one page carry mappings
+// for disjoint LIDs — they merge, so the PTX's SCFL LID 2 resolves through
+// the second MCF's entry and the reduction succeeds.
+func TestReduce_MCFMergeDisjointLIDs(t *testing.T) {
+	first := mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x8E, mcfFixMono10))
+	second := mcfGroup(tripletX24(0x05, 0x02), tripletX02(0x8E, mcfFixProp10))
+	doc, _, err := Reduce(bytes.NewReader(mcfDocFields([][]byte{first, second}, 0x02)))
 	if err != nil {
 		t.Fatalf("Reduce: %v", err)
 	}
@@ -163,9 +192,44 @@ func TestReduce_MCFSecondMappingWins(t *testing.T) {
 	if len(runs) != 1 {
 		t.Fatalf("got %d runs, want 1", len(runs))
 	}
-	if runs[0].FontID != "FIX-MONO-10" {
-		t.Errorf("FontID = %q, want %q (the second MCF wins)", runs[0].FontID, "FIX-MONO-10")
+	if runs[0].FontID != "FIX-PROP-10" {
+		t.Errorf("FontID = %q, want %q (merged in from the second MCF)", runs[0].FontID, "FIX-PROP-10")
 	}
+}
+
+// TestReduce_MCFDuplicateLIDAcrossFields: two MCF fields in one page map the
+// same LID — the uniform duplicate rule applies across fields as within a
+// field: a loud KindStructure abort naming the LID. A keep-first
+// implementation (`if st.mcf == nil`) pins the first mapping, and a
+// replace implementation pins the second; both must fail this test.
+func TestReduce_MCFDuplicateLIDAcrossFields(t *testing.T) {
+	first := mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x8E, mcfFixProp10))
+	second := mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x8E, mcfFixMono10))
+	_, _, err := Reduce(bytes.NewReader(mcfDocFields([][]byte{first, second}, 0x01)))
+	if err == nil {
+		t.Fatal("Reduce succeeded, want duplicate-LID abort")
+	}
+	var derr afp.DecodeError
+	if !errors.As(err, &derr) {
+		t.Fatalf("error %T (%v), want afp.DecodeError", err, err)
+	}
+	if derr.Kind != afp.KindStructure {
+		t.Errorf("Kind = %q, want %q", derr.Kind, afp.KindStructure)
+	}
+	want := "duplicate MCF local font ID 1; v1 does not support the MO:DCA p. 232 double-byte font exception"
+	if derr.Reason != want {
+		t.Errorf("Reason = %q, want %q", derr.Reason, want)
+	}
+}
+
+// TestReduce_MCFMergeUnsupportedThenMapped: a LID seen in Unsupported by the
+// first MCF and mapped by the second is still a duplicate — the uniform
+// rule checks both collections on both sides of the merge.
+func TestReduce_MCFMergeUnsupportedThenMapped(t *testing.T) {
+	first := mcfGroup(tripletX24(0x05, 0x03), tripletX02(0x84, mcfFixMono10))
+	second := mcfGroup(tripletX24(0x05, 0x03), tripletX02(0x8E, mcfFixProp10))
+	_, _, err := Reduce(bytes.NewReader(mcfDocFields([][]byte{first, second}, 0x01)))
+	assertReduceErrContains(t, err, "duplicate MCF local font ID 3; v1 does not support the MO:DCA p. 232 double-byte font exception")
 }
 
 // TestReduce_MCFResetAtBDT: the MCF mapping resets at BDT — a second
@@ -179,13 +243,50 @@ func TestReduce_MCFResetAtBDT(t *testing.T) {
 	assertReduceErrContains(t, err, "SCFL local font ID 1 has no MCF mapping (no MCF in stream)")
 }
 
+// TestReduce_MCFResetAtBPG: the MCF mapping is page-scoped — a second page
+// without its own MCF must not inherit the first page's map. SCFL LID≠0 on
+// page 2 with no MCF on page 2 fails with the no-MCF diagnostic, proving
+// the map did not leak across the page boundary.
+func TestReduce_MCFResetAtBPG(t *testing.T) {
+	page1MCF := mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x8E, mcfFixMono10))
+	_, _, err := Reduce(bytes.NewReader(mcfTwoPageDoc(page1MCF, nil, 0x01)))
+	assertReduceErrContains(t, err, "SCFL local font ID 1 has no MCF mapping (no MCF in stream)")
+}
+
+// TestReduce_MCFPerPageMapping: each page carries its own MCF — the mapping
+// is established fresh on the new page. Page 1 resolves LID 1 to
+// FIX-MONO-10, page 2 to FIX-PROP-10; neither page's metrics come from the
+// other's map.
+func TestReduce_MCFPerPageMapping(t *testing.T) {
+	page1MCF := mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x8E, mcfFixMono10))
+	page2MCF := mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x8E, mcfFixProp10))
+	doc, _, err := Reduce(bytes.NewReader(mcfTwoPageDoc(page1MCF, page2MCF, 0x01)))
+	if err != nil {
+		t.Fatalf("Reduce: %v", err)
+	}
+	if len(doc.Pages) != 2 {
+		t.Fatalf("got %d pages, want 2", len(doc.Pages))
+	}
+	want := []string{"FIX-MONO-10", "FIX-PROP-10"}
+	for i, id := range want {
+		runs := doc.Pages[i].Runs
+		if len(runs) != 1 {
+			t.Fatalf("page %d: got %d runs, want 1", i+1, len(runs))
+		}
+		if runs[0].FontID != id {
+			t.Errorf("page %d: FontID = %q, want %q (that page's own MCF)", i+1, runs[0].FontID, id)
+		}
+	}
+}
+
 // TestReduce_MCFParseErrorRebased: a malformed MCF field must report a
 // stream-relative offset (like visitPTX does) and attribute the error to the
 // MCF field — not the payload-relative offset the parser produced.
 func TestReduce_MCFParseErrorRebased(t *testing.T) {
 	// Malformed: RGLength 1 (< 2) → parser error at payload offset 0.
 	// Stream layout: BDT field (8-byte introducer + 10 payload = 18 bytes),
-	// then the MCF field (8-byte introducer). Expected offset: 18 + 8 + 0.
+	// BPG field (8-byte introducer + 8 payload = 16 bytes), then the MCF
+	// field (8-byte introducer). Expected offset: 18 + 16 + 8 + 0.
 	doc, _, err := Reduce(bytes.NewReader(mcfReduceStream([]byte{0x00, 0x01}, 0x01)))
 	_ = doc
 	if err == nil {
@@ -198,8 +299,8 @@ func TestReduce_MCFParseErrorRebased(t *testing.T) {
 	if derr.FieldID != "D3AB8A" {
 		t.Errorf("FieldID = %q, want %q", derr.FieldID, "D3AB8A")
 	}
-	if derr.Offset != 26 {
-		t.Errorf("Offset = %d, want 26 (stream-relative: BDT 18 + MCF introducer 8 + payload 0)", derr.Offset)
+	if derr.Offset != 42 {
+		t.Errorf("Offset = %d, want 42 (stream-relative: BDT 18 + BPG 16 + MCF introducer 8 + payload 0)", derr.Offset)
 	}
 }
 

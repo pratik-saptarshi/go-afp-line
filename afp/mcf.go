@@ -9,17 +9,21 @@ import (
 // MCFMapping is the parsed result of an MCF (Map Coded Font) field's
 // repeating groups. Each repeating group maps one local font ID (LID) to a
 // resource name; in the contracted subset only groups carrying a coded-font
-// name FQN (X'02' with FQNType X'8E') are mappable. Groups that cannot be
-// mapped (X'24' present, no X'8E' FQN) have their LID recorded in
-// Unsupported instead, in group order. (MO:DCA Reference S550-1058, MCF
-// structured field; field and triplet semantics paraphrased here, not
-// quoted.)
+// name FQN (X'02' with FQNType X'8E' *and* FQNFmt X'00', the
+// character-string format per MO:DCA FQN semantics) are mappable. An X'8E'
+// with any other FQNFmt (e.g. X'10' OID) carries no character-string name
+// and is treated like a nameless group. Groups that cannot be mapped (X'24'
+// present, no X'8E'/X'00' name) have their LID recorded in Unsupported
+// instead, in group order. (MO:DCA Reference S550-1058, MCF structured
+// field; field and triplet semantics paraphrased here, not quoted.)
 type MCFMapping struct {
-	// ByLID maps a local font ID to the coded font name from its X'8E'
-	// Fully Qualified Name triplet, EBCDIC-037 decoded.
+	// ByLID maps a local font ID to the coded font name from its X'8E' /
+	// X'00' Fully Qualified Name triplet, EBCDIC-037 decoded.
 	ByLID map[byte]string
 	// Unsupported lists the LIDs of repeating groups that carry an X'24'
-	// local ID but no X'8E' coded-font name, in group order.
+	// local ID but no X'8E'/X'00' coded-font name — either a different
+	// FQNType or an X'8E' with a non-character-string FQNFmt — in group
+	// order.
 	Unsupported []byte
 }
 
@@ -29,6 +33,7 @@ const (
 	mcfTripletFQN             byte = 0x02 // Fully Qualified Name
 	mcfResTypeFont            byte = 0x05 // Resource Local ID ResType: font
 	mcfFQNTypeCodedFontName   byte = 0x8E // FQNType: coded font name
+	mcfFQNFormatCharString    byte = 0x00 // FQNFmt: character string (MO:DCA FQN semantics)
 )
 
 // ParseMCFMapping parses the repeating groups of an MCF field's data (the
@@ -38,7 +43,8 @@ const (
 // followed by a run of MO:DCA triplets. RGLength bounds violations, malformed
 // X'24'/X'02' triplets, duplicate LIDs, repeated FQNTypes within a group, and
 // unexpected ResType values are DecodeError{Kind: KindStructure} — this parser
-// never guesses. An unexpected FQNType (anything but X'8E') is not an error:
+// never guesses. An unexpected FQNType (anything but X'8E'), or an X'8E'
+// with a non-character-string FQNFmt (anything but X'00'), is not an error:
 // the group simply carries no coded-font name. A group without an X'24' triplet
 // uses LID 0x00 (the architected default, applied per group); only a group
 // carrying an X'24' but no X'8E' FQN is recorded in Unsupported. Empty input
@@ -105,7 +111,8 @@ func ParseMCFMapping(data []byte) (MCFMapping, error) {
 // parseMCFGroup interprets one repeating group's triplets. It returns the
 // group's local font ID (0x00 when no X'24' triplet is present), hasX24
 // reporting whether an X'24' triplet was present, and, when the group
-// carries an X'8E' coded-font name FQN, the decoded name with hasName set.
+// carries an X'8E'/X'00' coded-font name FQN (FQNType X'8E', FQNFmt X'00'
+// character-string format), the decoded name with hasName set.
 // base is the group's byte offset within the field data, used to
 // re-base error offsets.
 func parseMCFGroup(triplets Triplets, base int) (lid byte, name string, hasName, hasX24 bool, err error) {
@@ -156,7 +163,7 @@ func parseMCFGroup(triplets Triplets, base int) (lid byte, name string, hasName,
 					Reason: fmt.Sprintf("MCF: X'02' needs FQNType/FQNFmt (2 bytes), have %d data bytes", len(tr.Data)),
 				}
 			}
-			if tr.Data[0] == mcfFQNTypeCodedFontName {
+			if tr.Data[0] == mcfFQNTypeCodedFontName && tr.Data[1] == mcfFQNFormatCharString {
 				name = decodeEBCDICName(tr.Data[2:])
 				hasName = true
 			}
