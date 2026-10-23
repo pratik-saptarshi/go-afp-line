@@ -168,6 +168,9 @@ type reduceState struct {
 	// metrics); a nil mcf means no MCF has appeared on the current page,
 	// which is a loud error for any nonzero LID — never a silent default.
 	mcf *afp.MCFMapping
+	// inOEG is true while inside an Object Environment Group; MCFs merge
+	// into the page map only when false.
+	inOEG bool
 }
 
 // groupKind identifies a group delimiter on the pairing stack. BPG rides
@@ -230,7 +233,8 @@ func (st *reduceState) visit(f afp.Field) error {
 			return st.fail(t.TypeID(), afp.KindStructure, "nested BDT: document already open")
 		}
 		st.inDoc = true
-		st.mcf = nil // mappings never leak across documents
+		st.mcf = nil     // mappings never leak across documents
+		st.inOEG = false // an OEG cannot span a document boundary
 		return nil
 	case *afp.EDT:
 		if !st.inDoc {
@@ -257,6 +261,7 @@ func (st *reduceState) visit(f afp.Field) error {
 		st.ptxSt = nil // new page = new coordinate space
 		st.mcf = nil   // MCF is page-scoped (Active Environment Group): a
 		// new page starts with no mapping
+		st.inOEG = false // an OEG cannot span a page boundary
 		return nil
 	case *afp.EPG:
 		if st.page == nil {
@@ -281,6 +286,7 @@ func (st *reduceState) visit(f afp.Field) error {
 		st.closeGroup() // grpBPG
 		st.pages = append(st.pages, *st.page)
 		st.page = nil
+		st.inOEG = false // a page end implicitly closes any open OEG scope
 		return nil
 	case *afp.RawField:
 		return st.visitRaw(t)
@@ -294,6 +300,13 @@ func (st *reduceState) visitRaw(t *afp.RawField) error {
 	if id == ptxTypeID {
 		return st.visitPTX(t)
 	}
+	if id == "D3A8C7" { // BOG: track the OEG scope for MCF merging
+		st.inOEG = true
+	} else if id == "D3A9C7" { // EOG: the OEG scope ends here
+		st.inOEG = false
+	}
+	// Fall through: BOG/EOG stay in the excluded-IDs table and take the
+	// existing census path below — no manual recording, no double-count.
 	if t.Excluded {
 		st.excls = append(st.excls, exclusionFor(t, st.cp))
 		return nil
