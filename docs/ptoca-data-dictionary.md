@@ -115,13 +115,12 @@ entry.
 
 Object Environment Group (OEG) scoping: BOG/EOG boundaries are tracked via
 an `inOEG` scope flag on the reducer state, set when `visitRaw` intercepts
-each boundary and cleared at BDT, BPG, and EPG — an OEG cannot span a
-document or page boundary. An MCF inside an OEG is still parsed, so
-malformed input aborts loudly, but its mapping is discarded instead of
-merged: the page namespace is never polluted. An unclosed BOG aborts loudly
-at the next BDT/BPG/EPG boundary ("unclosed OEG") instead of silently
-clearing — silent clearing would discard subsequent valid page MCFs and
-surface a misleading "no MCF mapping" diagnostic far from the cause.
+each boundary. An OEG cannot span a document or page boundary: if the flag
+is still set at BDT, BPG, EPG, EDT, or end-of-stream, Reduce aborts loudly
+with a KindStructure "unclosed OEG" diagnostic naming the boundary. An MCF
+inside an OEG is still parsed, so malformed input aborts loudly, but its
+mapping is discarded instead of merged: the page namespace is never
+polluted.
 
 The pinned table is the only autonomous font source: `FIX-MONO-10`
 (synthetic monospace, every glyph 600/1000 em) and `FIX-PROP-10` (synthetic
