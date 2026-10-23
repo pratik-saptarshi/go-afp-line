@@ -115,6 +115,33 @@ func TestParseMCFMapping_DuplicateLID(t *testing.T) {
 	})
 }
 
+func TestParseMCFMapping_DuplicateTripletInGroup(t *testing.T) {
+	t.Run("second X'24'", func(t *testing.T) {
+		data := mcfGroup(
+			tripletX24(0x05, 0x01),
+			tripletX24(0x05, 0x01),
+			tripletX02(0x8E, fixMono10),
+		)
+		_, err := ParseMCFMapping(data)
+		derr := assertDecodeKindStructure(t, err, "second X'24' in one repeating group")
+		if derr.Reason != "MCF: duplicate X'24' triplet in one repeating group" {
+			t.Errorf("reason: got %q, want %q", derr.Reason, "MCF: duplicate X'24' triplet in one repeating group")
+		}
+	})
+	t.Run("second X'02'", func(t *testing.T) {
+		data := mcfGroup(
+			tripletX24(0x05, 0x01),
+			tripletX02(0x8E, fixMono10),
+			tripletX02(0x8E, fixProp10),
+		)
+		_, err := ParseMCFMapping(data)
+		derr := assertDecodeKindStructure(t, err, "second X'02' in one repeating group")
+		if derr.Reason != "MCF: duplicate X'02' triplet in one repeating group" {
+			t.Errorf("reason: got %q, want %q", derr.Reason, "MCF: duplicate X'02' triplet in one repeating group")
+		}
+	})
+}
+
 func TestParseMCFMapping_BadResType(t *testing.T) {
 	t.Run("wrong ResType", func(t *testing.T) {
 		data := mcfGroup(tripletX24(0x06, 0x01), tripletX02(0x8E, fixMono10))

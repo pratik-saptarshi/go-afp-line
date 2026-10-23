@@ -1114,8 +1114,9 @@ func TestReduce_ReducerFailSites(t *testing.T) {
 
 // TestReduce_BNGENGAndMCFValid: the valid counterparts of the fail sites
 // above — balanced BNG/ENG brackets the document and an in-document MCF
-// with empty data is accepted (v1: noted, parameters uninterpreted), not
-// an abort. Empty data parses to a zero mapping per ParseMCFMapping.
+// with empty data is accepted (parameters parsed to the LID map; this
+// fixture has no SCFL, so the map is unused), not an abort. Empty data
+// parses to a zero mapping per ParseMCFMapping.
 func TestReduce_BNGENGAndMCFValid(t *testing.T) {
 	bdt := rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00))
 	edt := rawField(tEDT, append(ebcdicSpaces(8), 0x00, 0x00))

@@ -17,6 +17,7 @@ import (
 // EBCDIC-037 encodings of the coded font names used in these tests.
 var (
 	mcfFixMono10     = []byte{0xC6, 0xC9, 0xE7, 0x60, 0xD4, 0xD6, 0xD5, 0xD6, 0x60, 0xF1, 0xF0}                         // "FIX-MONO-10"
+	mcfFixProp10     = []byte{0xC6, 0xC9, 0xE7, 0x60, 0xD7, 0xD9, 0xD6, 0xD7, 0x60, 0xF1, 0xF0}                         // "FIX-PROP-10"
 	mcfNopeNotPinned = []byte{0xD5, 0xD6, 0xD7, 0xC5, 0x60, 0xD5, 0xD6, 0xE3, 0x60, 0xD7, 0xC9, 0xD5, 0xD5, 0xC5, 0xC4} // "NOPE-NOT-PINNED"
 )
 
@@ -49,11 +50,23 @@ func tripletX02(fqnType byte, name []byte) []byte {
 // mcfReduceStream builds a legal BDT → [MCF] → BPG → BPT → PTX(SCFL lid,
 // then TRN "A") → EPT → EPG → EDT stream. A nil mcfData omits the MCF field.
 func mcfReduceStream(mcfData []byte, lid byte) []byte {
+	var mcfDatas [][]byte
+	if mcfData != nil {
+		mcfDatas = [][]byte{mcfData}
+	}
+	return mcfDocFields(mcfDatas, lid)
+}
+
+// mcfDocFields builds one document: BDT → MCF* → BPG → BPT → PTX(SCFL lid,
+// then TRN "A") → EPT → EPG → EDT, with one MCF field per mcfDatas entry in
+// document order (needed to pin later-MCF-replaces-earlier and the BDT
+// reset across documents).
+func mcfDocFields(mcfDatas [][]byte, lid byte) []byte {
 	tMCF := [3]byte{0xD3, 0xAB, 0x8A}
 	fields := [][]byte{
 		rawField(tBDT, append(ebcdicSpaces(8), 0x00, 0x00)),
 	}
-	if mcfData != nil {
+	for _, mcfData := range mcfDatas {
 		fields = append(fields, rawField(tMCF, mcfData))
 	}
 	fields = append(fields,
@@ -131,4 +144,36 @@ func TestReduce_MCFUnsupportedForm(t *testing.T) {
 	mcf := mcfGroup(tripletX24(0x05, 0x02), tripletX02(0x84, mcfFixMono10))
 	_, _, err := Reduce(bytes.NewReader(mcfReduceStream(mcf, 0x02)))
 	assertReduceErrContains(t, err, "uses unsupported font identification")
+}
+
+// TestReduce_MCFSecondMappingWins: two MCF fields in one document carry
+// different mappings for the same LID — the later MCF replaces the earlier
+// map (reduce.go, D3AB8A case), so the PTX's SCFL LID 1 resolves to the
+// second MCF's coded font. A keep-first implementation (`if st.mcf == nil`)
+// pins the first mapping and must fail this test.
+func TestReduce_MCFSecondMappingWins(t *testing.T) {
+	first := mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x8E, mcfFixProp10))
+	second := mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x8E, mcfFixMono10))
+	doc, _, err := Reduce(bytes.NewReader(mcfDocFields([][]byte{first, second}, 0x01)))
+	if err != nil {
+		t.Fatalf("Reduce: %v", err)
+	}
+	runs := doc.Pages[0].Runs
+	if len(runs) != 1 {
+		t.Fatalf("got %d runs, want 1", len(runs))
+	}
+	if runs[0].FontID != "FIX-MONO-10" {
+		t.Errorf("FontID = %q, want %q (the second MCF wins)", runs[0].FontID, "FIX-MONO-10")
+	}
+}
+
+// TestReduce_MCFResetAtBDT: the MCF mapping resets at BDT — a second
+// document in the same stream without an MCF must not inherit the first
+// document's map. SCFL LID≠0 with no MCF in the current document fails with
+// the no-MCF diagnostic, proving the map did not leak across documents.
+func TestReduce_MCFResetAtBDT(t *testing.T) {
+	mapped := mcfGroup(tripletX24(0x05, 0x01), tripletX02(0x8E, mcfFixMono10))
+	stream := append(mcfDocFields([][]byte{mapped}, 0x01), mcfDocFields(nil, 0x01)...)
+	_, _, err := Reduce(bytes.NewReader(stream))
+	assertReduceErrContains(t, err, "SCFL local font ID 1 has no MCF mapping (no MCF in stream)")
 }

@@ -493,7 +493,7 @@ func (st *reduceState) visitPTX(t *afp.RawField) error {
 // advanceFunc returns the reducer's inline-advance closure for the PTOCA
 // decoder: SCFL local ID → pinned font metrics → width in points at the
 // default size. Unmapped fonts fail loudly via fontIDForLID, which also
-// verified the ID against the pinned registry; v1 never guesses metrics.
+// verifies the ID against the pinned registry; v1 never guesses metrics.
 func (st *reduceState) advanceFunc() advanceFunc {
 	return func(lid byte, text string) (float64, error) {
 		id, err := fontIDForLID(lid, st.mcf, st.off)
