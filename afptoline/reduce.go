@@ -248,6 +248,9 @@ func (st *reduceState) visit(f afp.Field) error {
 		if len(st.groups) != 0 {
 			return st.fail(t.TypeID(), afp.KindStructure, "EDT with unclosed group")
 		}
+		if st.inOEG {
+			return st.fail(t.TypeID(), afp.KindStructure, "unclosed OEG at document end: BOG without EOG")
+		}
 		st.inDoc = false
 		return nil
 	case *afp.BPG:
